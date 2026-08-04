@@ -6,6 +6,8 @@ const reminderSystem = require('./lib/reminder');
 const { alightMotion } = require('./lib/alightMotion');
 const { addSongFess, getSongFessStats, getAllSongFess } = require('./lib/songFess');
 const { addConfess, getConfessQueue, removeConfess } = require('./lib/confess');
+const { createSticker, checkFfmpeg, CONFIG: STICKER_CONFIG } = require('./lib/sticker');
+const { formatDuration } = require('./lib/stickerUtils');
 
 module.exports = async function(sock, messageInfo) {
     const { from, pushName, isGroup, isChannel, message, key } = messageInfo;
@@ -47,7 +49,12 @@ module.exports = async function(sock, messageInfo) {
     // ============================================
     try {
         switch(cmd) {
-            // INFO COMMANDS
+            
+            case 'sticker':
+case 'stiker':
+case 's':
+    await cmdSticker(sock, from, commandArgs, pushName, messageInfo);
+    break;
             case 'info':
             case 'menu':
                 await cmdInfo(sock, from);
@@ -150,6 +157,256 @@ module.exports = async function(sock, messageInfo) {
 // ============================================
 // COMMAND FUNCTIONS
 // ============================================
+
+
+
+
+
+
+// ============================================
+// STICKER MAKER COMMAND
+// ============================================
+
+async function cmdSticker(sock, from, args, pushName, messageInfo) {
+    const prefix = global.botConfig.prefix;
+    
+    // Cek ffmpeg
+    const hasFfmpeg = await checkFfmpeg();
+    if (!hasFfmpeg) {
+        await sock.sendMessage(from, {
+            text: '❌ *FFmpeg tidak terinstall!*\n\n' +
+                  'Sticker maker membutuhkan FFmpeg.\n' +
+                  'Silakan install FFmpeg terlebih dahulu.\n\n' +
+                  '💡 *Cara install:*\n' +
+                  '• Linux: apt install ffmpeg\n' +
+                  '• Termux: pkg install ffmpeg\n' +
+                  '• Windows: Download dari ffmpeg.org'
+        });
+        return;
+    }
+    
+    // Parse arguments
+    let stickerType = 'full';
+    let packName = STICKER_CONFIG.PACK;
+    let authorName = STICKER_CONFIG.AUTHOR;
+    
+    args.forEach(arg => {
+        const lower = arg.toLowerCase();
+        if (['full', 'circle', 'rounded'].includes(lower)) {
+            stickerType = lower;
+        } else if (lower.startsWith('pack=')) {
+            packName = arg.replace('pack=', '').replace(/"/g, '');
+        } else if (lower.startsWith('author=')) {
+            authorName = arg.replace('author=', '').replace(/"/g, '');
+        }
+    });
+    
+    // Jika user minta help
+    if (args.includes('help') || args.includes('?')) {
+        await showStickerHelp(sock, from, prefix);
+        return;
+    }
+    
+    // Cek apakah ada media (gambar/video)
+    const message = messageInfo.message;
+    let hasMedia = false;
+    let mediaType = '';
+    let mediaDuration = 0;
+    
+    // Cek direct message
+    if (message.imageMessage) {
+        hasMedia = true;
+        mediaType = 'image';
+    } else if (message.videoMessage) {
+        hasMedia = true;
+        mediaType = 'video';
+        mediaDuration = message.videoMessage.seconds || 0;
+    }
+    
+    // Cek quoted message (reply)
+    if (!hasMedia && message.extendedTextMessage?.contextInfo?.quotedMessage) {
+        const quoted = message.extendedTextMessage.contextInfo.quotedMessage;
+        if (quoted.imageMessage) {
+            hasMedia = true;
+            mediaType = 'image';
+        } else if (quoted.videoMessage) {
+            hasMedia = true;
+            mediaType = 'video';
+            mediaDuration = quoted.videoMessage.seconds || 0;
+        }
+    }
+    
+    if (!hasMedia) {
+        // Tampilkan menu sticker maker
+        await showStickerMenu(sock, from, prefix);
+        return;
+    }
+    
+    // Cek durasi video
+    if (mediaType === 'video' && mediaDuration > STICKER_CONFIG.MAX_VIDEO_DURATION) {
+        await sock.sendMessage(from, {
+            text: `❌ *Video terlalu panjang!*\n\n` +
+                  `⏱️ Durasi: ${formatDuration(mediaDuration)}\n` +
+                  `📏 Maksimal: ${STICKER_CONFIG.MAX_VIDEO_DURATION} detik\n\n` +
+                  `💡 Tips: Potong video dulu atau kirim video yang lebih pendek.`
+        });
+        return;
+    }
+    
+    // Kirim status
+    await sock.sendMessage(from, { 
+        text: '🔄 *Membuat sticker...*\n\n' +
+              `📸 Tipe: ${mediaType === 'image' ? 'Gambar' : 'Video'}\n` +
+              `🎨 Style: ${stickerType}\n` +
+              (mediaType === 'video' ? `⏱️ Durasi: ${formatDuration(mediaDuration)}\n` : '') +
+              '\n⏳ Mohon tunggu sebentar...'
+    });
+    
+    try {
+        // Create sticker
+        const result = await createSticker(sock, messageInfo, {
+            type: stickerType,
+            pack: packName,
+            author: authorName
+        });
+        
+        // Kirim sticker
+        const stickerMsg = {
+            sticker: result.sticker
+        };
+        
+        await sock.sendMessage(from, stickerMsg);
+        
+        // Kirim info tambahan
+        setTimeout(async () => {
+            const info = `✅ *Sticker Berhasil!*\n\n` +
+                        `📸 Tipe: ${result.type === 'animated' ? '🎬 Animasi' : '🖼️ Statis'}\n` +
+                        `🎨 Style: ${stickerType === 'full' ? '📱 Full' : stickerType === 'circle' ? '⭕ Circle' : '🔲 Rounded'}\n` +
+                        `📦 Pack: ${packName}\n` +
+                        `✍️ Author: ${authorName}\n\n` +
+                        `💡 *Tips:*\n` +
+                        `• ${prefix}s circle - Sticker bulat\n` +
+                        `• ${prefix}s rounded - Sticker rounded\n` +
+                        `• ${prefix}s pack="Nama" - Custom pack`;
+            
+            await sock.sendMessage(from, { text: info });
+        }, 500);
+        
+    } catch (err) {
+        console.error('Sticker Error:', err.message);
+        await sock.sendMessage(from, {
+            text: `❌ *Gagal membuat sticker!*\n\n` +
+                  `Error: ${err.message}\n\n` +
+                  `💡 *Tips:*\n` +
+                  `• Pastikan gambar/video tidak rusak\n` +
+                  `• Video maksimal ${STICKER_CONFIG.MAX_VIDEO_DURATION} detik\n` +
+                  `• Ukuran file maksimal 10 MB`
+        });
+    }
+}
+
+/**
+ * Tampilkan menu sticker maker
+ */
+async function showStickerMenu(sock, from, prefix) {
+    const message = {
+        image: { url: 'https://files.catbox.moe/sticker-banner.jpg' },
+        caption: `╔══════════════════════════╗\n` +
+                 `║   🎨 STICKER MAKER     ║\n` +
+                 `║   Foto & Video (15s)   ║\n` +
+                 `╚══════════════════════════╝\n\n` +
+                 `📌 *Cara Membuat Sticker:*\n\n` +
+                 `*1️⃣ Kirim/Reply Gambar:*\n` +
+                 `${prefix}s\n` +
+                 `${prefix}s circle\n` +
+                 `${prefix}s rounded\n\n` +
+                 `*2️⃣ Kirim/Reply Video:*\n` +
+                 `${prefix}s\n` +
+                 `${prefix}s circle\n\n` +
+                 `*3️⃣ Custom Pack:*\n` +
+                 `${prefix}s pack="Namaku" author="Bot"\n\n` +
+                 `🎨 *Style Tersedia:*\n` +
+                 `• full - Sticker penuh\n` +
+                 `• circle - Sticker bulat ⭕\n` +
+                 `• rounded - Ujung tumpul 🔲\n\n` +
+                 `📏 *Batasan:*\n` +
+                 `• Gambar: Tidak terbatas\n` +
+                 `• Video: Maksimal 15 detik\n` +
+                 `• File: Maksimal 10 MB\n\n` +
+                 `💡 *Contoh:*\n` +
+                 `Reply gambar → ${prefix}s circle\n` +
+                 `Kirim video → ${prefix}s rounded\n\n` +
+                 `🔍 ${prefix}s help - Bantuan lengkap`,
+        footer: '🎨 Sticker Maker v1.0',
+        buttons: [
+            { 
+                buttonId: `${prefix}s full`, 
+                buttonText: { displayText: '📱 Full Sticker' }, 
+                type: 1 
+            },
+            { 
+                buttonId: `${prefix}s circle`, 
+                buttonText: { displayText: '⭕ Circle' }, 
+                type: 1 
+            },
+            { 
+                buttonId: `${prefix}s help`, 
+                buttonText: { displayText: '📖 Bantuan' }, 
+                type: 1 
+            }
+        ],
+        viewOnce: false
+    };
+
+    try {
+        await sock.sendMessage(from, message);
+    } catch (e) {
+        await sock.sendMessage(from, {
+            text: `🎨 *STICKER MAKER*\n\n` +
+                  `📌 Cara pakai:\n` +
+                  `1. Kirim/reply gambar atau video (max 15s)\n` +
+                  `2. Ketik ${prefix}s\n\n` +
+                  `Style: ${prefix}s full | circle | rounded\n` +
+                  `Help: ${prefix}s help`
+        });
+    }
+}
+
+/**
+ * Tampilkan bantuan lengkap
+ */
+async function showStickerHelp(sock, from, prefix) {
+    const text = `╔══════════════════════════╗\n` +
+                 `║  📖 BANTUAN STICKER    ║\n` +
+                 `╚══════════════════════════╝\n\n` +
+                 `🎨 *STICKER MAKER HELP*\n\n` +
+                 `*Command Dasar:*\n` +
+                 `${prefix}s - Buat sticker (full)\n` +
+                 `${prefix}sticker - Sama seperti ${prefix}s\n` +
+                 `${prefix}stiker - Alias\n\n` +
+                 `*Style Sticker:*\n` +
+                 `${prefix}s full - Sticker full (default)\n` +
+                 `${prefix}s circle - Sticker bulat\n` +
+                 `${prefix}s rounded - Sticker rounded\n\n` +
+                 `*Custom Metadata:*\n` +
+                 `${prefix}s pack="Nama Pack" author="Nama"\n\n` +
+                 `*Cara Pakai:*\n` +
+                 `1️⃣ Kirim gambar/video ke chat\n` +
+                 `2️⃣ Reply gambar/video itu\n` +
+                 `3️⃣ Ketik ${prefix}s [style]\n\n` +
+                 `ATAU langsung kirim gambar/video\n` +
+                 `dengan caption ${prefix}s\n\n` +
+                 `*Batasan:*\n` +
+                 `• Gambar: Bebas ukuran\n` +
+                 `• Video: Maks 15 detik\n` +
+                 `• File: Maks 10 MB\n\n` +
+                 `*FFmpeg Required!*\n` +
+                 `Install FFmpeg dulu untuk pakai fitur ini.\n\n` +
+                 `💡 Tips: Sticker bulat bagus\n` +
+                 `buat foto profil!`;
+    
+    await sock.sendMessage(from, { text });
+        }
 
 // .info / .menu - With Thumbnail & Button List
 async function cmdInfo(sock, from) {
