@@ -36,6 +36,10 @@ module.exports = async function(sock, messageInfo) {
     // ============================================
     // PARSE COMMAND
     // ============================================
+    const sender = msg.key.remoteJid;
+    const image = fs.readFileSync("./image/menu.jpg")
+    const isAdmin = (admin.includes(sender))
+    const menuImage = fs.readFileSync(image);
     const args = text.slice(prefix.length).trim().split(/ +/);
     const cmd = args[0]?.toLowerCase() || '';
     const commandArgs = args.slice(1);
@@ -569,14 +573,12 @@ async function cmdOwner(sock, from) {
     const ownerNumber = global.botConfig.noOwner.replace(/^0/, '62');
     
     const message = {
-        image: { url: 'https://files.catbox.moe/owner-banner.jpg' },
+        image: ${menuImage},
         caption: `╔══════════════════════════╗\n` +
                  `║       👤 OWNER BOT       ║\n` +
                  `╚══════════════════════════╝\n\n` +
                  `👤 *Nama:* ${global.botConfig.owner}\n` +
-                 `📞 *WhatsApp:* ${global.botConfig.noOwner}\n` +
-                 `💬 *Telegram:* @ndiidepzX\n\n` +
-                 `📧 *Email:* owner@example.com\n\n` +
+                 `📞 *WhatsApp:* ${global.botConfig.noOwner}\n\n` +
                  `💡 Untuk pertanyaan atau request,\n` +
                  `silakan hubungi owner melalui tombol di bawah.`,
         footer: '👆 Klik tombol untuk menghubungi owner',
@@ -604,7 +606,6 @@ async function cmdOwner(sock, from) {
                   `╚══════════════════════════╝\n\n` +
                   `👤 Nama: *${global.botConfig.owner}*\n` +
                   `📞 WhatsApp: *${global.botConfig.noOwner}*\n` +
-                  `💬 Telegram: @ndiidepzX\n\n` +
                   `🔗 Link WA: https://wa.me/${ownerNumber}\n\n` +
                   `💡 Untuk pertanyaan atau request,\n` +
                   `silakan hubungi owner.`
@@ -618,13 +619,8 @@ async function cmdWalas(sock, from) {
                  `║    👩‍🏫 WALI KELAS 8C     ║\n` +
                  `╚══════════════════════════╝\n\n` +
                  `📌 *Informasi Wali Kelas*\n\n` +
-                 `👤 Nama: Ibu Sari, S.Pd.\n` +
-                 `🏫 Kelas: 8C\n` +
-                 `📞 No. HP: 081234567890\n\n` +
-                 `🕐 Jam Konsultasi:\n` +
-                 `   Senin - Jumat: 08.00 - 14.00\n` +
-                 `   Sabtu: 08.00 - 12.00\n\n` +
-                 `📍 Ruang: Kantor Guru Lt. 2`;
+                 `👤 Nama: Bapak Agung Wicaksono, S.Pd.\n` +
+                 `🏫 Kelas: 8C`
     
     await sock.sendMessage(from, { text });
 }
@@ -642,7 +638,7 @@ async function cmdSongFess(sock, from, args, pushName, messageInfo) {
     
     if (args.length === 0) {
         const message = {
-            image: { url: 'https://files.catbox.moe/songfess-banner.jpg' },
+            image: ${menuImage},
             caption: `╔══════════════════════════╗\n` +
                      `║    🎵 S O N G F E S S   ║\n` +
                      `╚══════════════════════════╝\n\n` +
@@ -802,7 +798,7 @@ async function cmdConfess(sock, from, args, pushName, messageInfo) {
     
     if (args.length === 0) {
         const message = {
-            image: { url: 'https://files.catbox.moe/confess-banner.jpg' },
+            image: ${menuImage},
             caption: `╔══════════════════════════╗\n` +
                      `║  💌 M E N F E S S      ║\n` +
                      `║    CONFESS ANONIM       ║\n` +
