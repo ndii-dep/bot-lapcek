@@ -8,6 +8,8 @@ const { addSongFess, getSongFessStats, getAllSongFess } = require('./lib/songFes
 const { addConfess, getConfessQueue, removeConfess } = require('./lib/confess');
 const { createSticker, checkFfmpeg, CONFIG: STICKER_CONFIG } = require('./lib/sticker');
 const { formatDuration } = require('./lib/stickerUtils');
+const { suggestCommand, formatSuggestion } = require('./lib/cmdSuggest');
+
 
 module.exports = async function(sock, messageInfo) {
     const { from, pushName, isGroup, isChannel, message, key } = messageInfo;
@@ -53,6 +55,15 @@ module.exports = async function(sock, messageInfo) {
     // ============================================
     try {
         switch(cmd) {
+
+                
+case 'search':
+case 'cari':
+case 'find':
+case 'cmd':
+    await cmdSearch(sock, from, commandArgs, prefix);
+    break;
+
             
             case 'sticker':
 case 'stiker':
@@ -170,6 +181,68 @@ case 's':
 // ============================================
 // STICKER MAKER COMMAND
 // ============================================
+
+async function cmdSearch(sock, from, args, prefix) {
+    if (args.length === 0) {
+        await sock.sendMessage(from, {
+            text: `🔍 *COMMAND SEARCH*\n\n` +
+                  `Cari command berdasarkan kata kunci.\n\n` +
+                  `📌 *Cara pakai:*\n` +
+                  `${prefix}search <kata kunci>\n\n` +
+                  `💡 *Contoh:*\n` +
+                  `${prefix}search jadwal\n` +
+                  `${prefix}cari piket\n` +
+                  `${prefix}find song`
+        });
+        return;
+    }
+
+    const query = args.join(' ').toLowerCase();
+    const suggestions = suggestCommand(query, 0.1, 10);
+    
+    if (suggestions.length === 0) {
+        await sock.sendMessage(from, {
+            text: `🔍 *Pencarian: "${query}"*\n\n` +
+                  `❌ Tidak ada command yang cocok.\n\n` +
+                  `💡 Coba kata kunci lain atau\n` +
+                  `ketik *${prefix}menu* untuk lihat semua.`
+        });
+        return;
+    }
+
+    // Group by category
+    const grouped = {};
+    suggestions.forEach(s => {
+        if (!grouped[s.category]) grouped[s.category] = [];
+        grouped[s.category].push(s);
+    });
+
+    let text = `╔══════════════════════════╗\n`;
+    text += `║  🔍 SEARCH RESULTS     ║\n`;
+    text += `╚══════════════════════════╝\n\n`;
+    text += `🔎 *Pencarian:* "${query}"\n`;
+    text += `📊 *Ditemukan:* ${suggestions.length} command\n\n`;
+
+    for (const [category, cmds] of Object.entries(grouped)) {
+        text += `📂 *${category}*\n`;
+        text += `─────────────────────────\n`;
+        
+        cmds.forEach(c => {
+            const percent = Math.round(c.similarity * 100);
+            text += `  📝 *${prefix}${c.cmd}*\n`;
+            text += `     📖 ${c.desc}\n`;
+            text += `     🎯 ${percent}% cocok\n`;
+            if (c.alias.length > 0) {
+                text += `     🔀 ${c.alias.slice(0, 3).map(a => prefix + a).join(', ')}\n`;
+            }
+            text += `\n`;
+        });
+    }
+
+    text += `💡 Ketik *${prefix}menu* untuk semua command.`;
+
+    await sock.sendMessage(from, { text });
+}
 
 async function cmdSticker(sock, from, args, pushName, messageInfo) {
     const prefix = global.botConfig.prefix;
@@ -1053,3 +1126,40 @@ async function cmdGetId(sock, from, messageInfo) {
     
     await sock.sendMessage(from, { text });
 }
+
+default:
+    if (cmd) {
+        // Cari command yang mirip
+        const suggestions = suggestCommand(cmd, 0.3, 5);
+        
+        if (suggestions.length > 0) {
+            // Ada saran command
+            const suggestionText = formatSuggestion(cmd, suggestions, prefix);
+            
+            const suggestionMsg = {
+                text: suggestionText,
+                footer: '💡 Command Suggestion System',
+                buttons: suggestions.slice(0, 3).map((s, i) => ({
+                    buttonId: `${prefix}${s.cmd}`,
+                    buttonText: { displayText: `${i === 0 ? '⭐ ' : ''}${prefix}${s.cmd}` },
+                    type: 1
+                })),
+                viewOnce: false
+            };
+
+            try {
+                await sock.sendMessage(from, suggestionMsg);
+            } catch (e) {
+                await sock.sendMessage(from, { text: suggestionText });
+            }
+        } else {
+            // Tidak ada saran
+            await sock.sendMessage(from, { 
+                text: `❌ *Unknown Command*\n\n` +
+                      `Command *${prefix}${cmd}* tidak ditemukan.\n\n` +
+                      `Ketik *${prefix}menu* untuk melihat semua command.\n\n` +
+                      `💡 Tips: Coba periksa ejaan command kamu.`
+            });
+        }
+    }
+    break;
