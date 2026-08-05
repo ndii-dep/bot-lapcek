@@ -6,11 +6,18 @@ const {
     DisconnectReason,
     delay
 } = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
 const Pino = require('pino');
 const readline = require('readline');
 const fs = require('fs');
 const path = require('path');
+const { 
+    getFeatureStatus, 
+    createWelcomeCanvas, 
+    createGoodbyeCanvas, 
+    getAutoPostSWCaption,
+    updateAutoPostSWCaption,
+    getLastAutoPostTime 
+} = require('./lib/autoFeatures');
 
 global.botConfig = {
     name: 'NeoGoforward',
@@ -48,14 +55,9 @@ function askQuestion(query) {
 
 function createRequiredFolders() {
     const folders = [
-        'db',
-        'db/info',
-        'db/info/reminder',
-        'lib',
-        'data',
-        'temp',
-        'temp/sticker',
-        'alight-output',
+        'db', 'db/info', 'db/info/reminder',
+        'lib', 'data', 'temp', 'temp/sticker',
+        'alight-output', 'assets', 'assets/fonts',
     ];
     
     folders.forEach(folder => {
@@ -71,11 +73,10 @@ let reminderSystem = null;
 
 function loadModules() {
     try {
-        caseHandler = require('./case.js');
+        caseHandler = require('./case');
         console.log('✅ Case handler loaded');
     } catch (err) {
         console.error('❌ Failed to load case.js:', err.message);
-        console.log('⚠️  Please make sure case.js exists in the same folder');
         process.exit(1);
     }
     
@@ -84,7 +85,6 @@ function loadModules() {
         console.log('✅ Reminder system loaded');
     } catch (err) {
         console.error('❌ Failed to load reminder system:', err.message);
-        console.log('⚠️  Please make sure lib/reminder.js exists');
     }
 }
 
@@ -129,7 +129,19 @@ async function connectToWhatsApp() {
                     reminderSystem.init(sock);
                     console.log('✅ Reminder system started');
                 } catch (e) {
-                    console.log('⚠️  Reminder system init failed:', e.message);
+                    console.log('⚠️  Reminder system init failed');
+                }
+            }
+            
+            if (getFeatureStatus('autopostsw')) {
+                try {
+                    const caption = getAutoPostSWCaption();
+                    await sock.sendMessage('status@broadcast', {
+                        text: caption
+                    });
+                    console.log('✅ Auto Post SW sent');
+                } catch (e) {
+                    console.log('⚠️  Auto Post SW failed');
                 }
             }
             
@@ -158,6 +170,68 @@ async function connectToWhatsApp() {
     
     sock.ev.on('creds.update', saveCreds);
     
+    sock.ev.on('group-participants.update', async (update) => {
+        const { id, participants, action } = update;
+        
+        if (getFeatureStatus('welcome') && action === 'add') {
+            for (const participant of participants) {
+                try {
+                    const userName = participant.split('@')[0];
+                    const displayName = userName.startsWith('62') ? '0' + userName.slice(2) : userName;
+                    
+                    let groupName = 'Grup';
+                    try {
+                        const meta = await sock.groupMetadata(id);
+                        groupName = meta.subject;
+                    } catch (e) {}
+                    
+                    let profilePic = null;
+                    try {
+                        const pp = await sock.profilePictureUrl(participant, 'image');
+                        profilePic = pp;
+                    } catch (e) {}
+                    
+                    const canvasBuffer = await createWelcomeCanvas(displayName, groupName, profilePic);
+                    
+                    await sock.sendMessage(id, {
+                        image: canvasBuffer,
+                        caption: `🎉 *WELCOME!*\n\nHai @${participant.split('@')[0]}!\nSelamat datang di *${groupName}*!\n\nJangan lupa baca rules grup ya!`,
+                        mentions: [participant]
+                    });
+                    
+                } catch (e) {
+                    console.error('Welcome error:', e.message);
+                }
+            }
+        }
+        
+        if (getFeatureStatus('goodbye') && action === 'remove') {
+            for (const participant of participants) {
+                try {
+                    const userName = participant.split('@')[0];
+                    const displayName = userName.startsWith('62') ? '0' + userName.slice(2) : userName;
+                    
+                    let groupName = 'Grup';
+                    try {
+                        const meta = await sock.groupMetadata(id);
+                        groupName = meta.subject;
+                    } catch (e) {}
+                    
+                    const canvasBuffer = await createGoodbyeCanvas(displayName, groupName);
+                    
+                    await sock.sendMessage(id, {
+                        image: canvasBuffer,
+                        caption: `👋 *GOODBYE!*\n\n@${userName} telah meninggalkan *${groupName}*.\n\nSemoga sukses selalu! ✨`,
+                        mentions: [participant]
+                    });
+                    
+                } catch (e) {
+                    console.error('Goodbye error:', e.message);
+                }
+            }
+        }
+    });
+    
     if (!sock.authState.creds.registered) {
         console.log('\n📱 BOT BELUM TERDAFTAR');
         console.log('═══════════════════════════════════════');
@@ -185,7 +259,6 @@ async function connectToWhatsApp() {
             console.log('5. Tunggu hingga terhubung\n');
         } catch (error) {
             console.error('❌ Gagal membuat pairing code:', error.message);
-            console.log('💡 Tips: Pastikan nomor sudah benar dan coba lagi');
             process.exit(1);
         }
     }
@@ -214,6 +287,18 @@ async function connectToWhatsApp() {
             
             const preview = getTextPreview(msg.message);
             console.log(`📩 [${chatType}] ${messageInfo.pushName}: ${preview}`);
+            
+            if (getFeatureStatus('autotyping')) {
+                await sock.sendPresenceUpdate('composing', messageInfo.from);
+            }
+            
+            if (getFeatureStatus('autorecord')) {
+                await sock.sendPresenceUpdate('recording', messageInfo.from);
+            }
+            
+            if (getFeatureStatus('autoread')) {
+                await sock.readMessages([msg.key]);
+            }
             
             if (caseHandler) {
                 await caseHandler(sock, messageInfo);
