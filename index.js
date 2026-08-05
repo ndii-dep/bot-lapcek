@@ -14,7 +14,7 @@ const path = require('path');
 
 global.botConfig = {
     name: 'NeoGoforward',
-    version: '1.1.1',
+    version: '1.2.1',
     owner: 'ndiidepzX',
     noOwner: '085800650661',
     noBot: '087717274346',
