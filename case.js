@@ -1,24 +1,36 @@
 const schoolData = require('./lib/schoolData');
 const reminderSystem = require('./lib/reminder');
-const process = require('process');
-const moment = require("moment-timezone")
-const os = require('os');
-const didyoumean = require('didyoumean');
-const checkDiskSpace = require('check-disk-space').default;
-const speed = require('performance-now')
-const schedule = require("node-schedule");
-const archiver = require("archiver");
-const threshold = 0.72
-const similarity = require('similarity');
 const { alightMotion } = require('./lib/alightMotion');
 const { addSongFess, getSongFessStats, getAllSongFess } = require('./lib/songFess');
 const { addConfess, getConfessQueue, removeConfess } = require('./lib/confess');
 const { createSticker, checkFfmpeg, CONFIG: STICKER_CONFIG } = require('./lib/sticker');
 const { formatDuration } = require('./lib/stickerUtils');
-const { suggestCommand, formatSuggestion } = require('./lib/cmdSuggest');
 const { addPR, deletePR, getPRs, getPRById, getPRStats, formatPRList, formatPRDetail } = require('./lib/prTracker');
 const { getUserLevel, hasPermission, getLevelName, addPartner, removePartner, listPartners, LEVELS, PERMISSIONS, getPermissionList } = require('./lib/permission');
 const { addChannel, addGroup, removeChannel, removeGroup, getChannels, getGroups, getAllTargets } = require('./lib/channelManager');
+const { toAudio, toPTT, toVideo, ffmpeg } = require('./lib/converter');
+const didYouMean = require('didyoumean');
+
+// Ambil semua command dari file ini secara otomatis
+const fs = require('fs');
+const path = require('path');
+
+function getAllCommands() {
+    const commands = [];
+    const filePath = __filename;
+    const content = fs.readFileSync(filePath, 'utf8');
+    
+    // Cari semua case di switch statement
+    const caseRegex = /case\s+['"]([^'"]+)['"]\s*:/g;
+    let match;
+    while ((match = caseRegex.exec(content)) !== null) {
+        commands.push(match[1]);
+    }
+    
+    return [...new Set(commands)]; // Hapus duplikat
+}
+
+const allCommands = getAllCommands();
 
 module.exports = async function(sock, messageInfo) {
     const { from, pushName, isGroup, isChannel, message, key } = messageInfo;
@@ -38,6 +50,140 @@ module.exports = async function(sock, messageInfo) {
     
     const prefix = global.botConfig.prefix;
     if (!text.startsWith(prefix)) return;
+
+    // ============ QUOTED MESSAGE UTILITY ============
+
+const createQuoted = {
+    // Untuk message dari Shop/Store
+    shop: (text) => ({
+        key: {
+            remoteJid: '0@s.whatsapp.net',
+            participant: '0@s.whatsapp.net'
+        },
+        message: {
+            newsletterAdminInviteMessage: {
+                newsletterJid: '120363166641556515@newsletter',
+                newsletterName: 'FestiveShopID',
+                caption: text || '🛍️ FestiveShopID - Belanja Mudah & Terpercaya!'
+            }
+        }
+    }),
+
+    // Untuk message dari Owner
+    owner: (text) => ({
+        key: {
+            remoteJid: '0@s.whatsapp.net',
+            participant: '0@s.whatsapp.net'
+        },
+        message: {
+            newsletterAdminInviteMessage: {
+                newsletterJid: '120363303234567890@newsletter',
+                newsletterName: 'Owner NeoGoforward',
+                caption: text || '👑 Official Owner Bot'
+            }
+        }
+    }),
+
+    // Untuk message dari Bot
+    bot: (text) => ({
+        key: {
+            remoteJid: '0@s.whatsapp.net',
+            participant: '0@s.whatsapp.net'
+        },
+        message: {
+            newsletterAdminInviteMessage: {
+                newsletterJid: '120363299999999999@newsletter',
+                newsletterName: `${global.botConfig.name}`,
+                caption: text || `🤖 ${global.botConfig.name} v${global.botConfig.version}`
+            }
+        }
+    }),
+
+    // Untuk message dengan timestamp
+    time: (text) => {
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString('id-ID', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            second: '2-digit',
+            timeZone: 'Asia/Jakarta'
+        });
+        const dateStr = now.toLocaleDateString('id-ID', {
+            weekday: 'long',
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric',
+            timeZone: 'Asia/Jakarta'
+        });
+
+        return {
+            key: {
+                remoteJid: '0@s.whatsapp.net',
+                participant: '0@s.whatsapp.net'
+            },
+            message: {
+                newsletterAdminInviteMessage: {
+                    newsletterJid: '120363333333333333@newsletter',
+                    newsletterName: `⏰ ${timeStr}`,
+                    caption: text || `📅 ${dateStr}\n🕐 ${timeStr} WIB`
+                }
+            }
+        };
+    },
+
+    // Untuk message dari Channel tertentu
+    channel: (channelId, channelName, text) => ({
+        key: {
+            remoteJid: '0@s.whatsapp.net',
+            participant: '0@s.whatsapp.net'
+        },
+        message: {
+            newsletterAdminInviteMessage: {
+                newsletterJid: channelId || '120363000000000000@newsletter',
+                newsletterName: channelName || 'Channel WhatsApp',
+                caption: text || '📢 Official Channel'
+            }
+        }
+    }),
+
+    // Untuk message dengan custom
+    custom: (jid, name, text) => ({
+        key: {
+            remoteJid: '0@s.whatsapp.net',
+            participant: '0@s.whatsapp.net'
+        },
+        message: {
+            newsletterAdminInviteMessage: {
+                newsletterJid: jid || '0@newsletter',
+                newsletterName: name || 'Unknown',
+                caption: text || ''
+            }
+        }
+    })
+};
+
+// Fungsi untuk mendapatkan quoted berdasarkan tipe
+function getQuoted(type, text) {
+    const types = {
+        shop: createQuoted.shop,
+        owner: createQuoted.owner,
+        bot: createQuoted.bot,
+        time: createQuoted.time,
+        channel: createQuoted.channel,
+        custom: createQuoted.custom
+    };
+
+    const func = types[type];
+    if (!func) return null;
+
+    if (type === 'channel') {
+        return func(text?.channelId, text?.channelName, text?.caption);
+    } else if (type === 'custom') {
+        return func(text?.jid, text?.name, text?.caption);
+    } else {
+        return func(text);
+    }
+}
     
     const args = text.slice(prefix.length).trim().split(/ +/);
     const cmd = args[0]?.toLowerCase() || '';
@@ -46,59 +192,13 @@ module.exports = async function(sock, messageInfo) {
     const senderNumber = from.split('@')[0];
     const userLevel = getUserLevel(senderNumber, pushName);
     const levelName = getLevelName(userLevel);
-
-    const fsaluran = {
-            key: {
-                remoteJid: '0@s.whatsapp.net',
-                participant: '0@s.whatsapp.net'
-            },
-            message: {
-                newsletterAdminInviteMessage: {
-                    newsletterJid: '120363210705976689@newsletter',
-                    newsletterName: '',
-                    caption: body
-                }
-            }
-    }
-
-    const hariini = moment.tz('Asia/Jakarta').format('dddd, DD MMMM YYYY')
-        const wib = moment.tz('Asia/Jakarta').format('HH : mm : ss')
-        const wit = moment.tz('Asia/Jayapura').format('HH : mm : ss')
-        const wita = moment.tz('Asia/Makassar').format('HH : mm : ss')
-
-        const time2 = moment().tz('Asia/Jakarta').format('HH:mm:ss')
-        if (time2 < "23:59:00") {
-            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ᴍᴀʟᴀᴍ️'
-        }
-        if (time2 < "19:00:00") {
-            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ᴘᴇᴛᴀɴɢ'
-        }
-        if (time2 < "18:00:00") {
-            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ꜱᴏʀᴇ'
-        }
-        if (time2 < "15:00:00") {
-            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ꜱɪᴀɴɢ️'
-        }
-        if (time2 < "10:00:00") {
-            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ᴘᴀɢɪ'
-        }
-        if (time2 < "05:00:00") {
-            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ꜱᴜʙᴜʜ'
-        }
-        if (time2 < "03:00:00") {
-            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ᴛᴇɴɢᴀʜ ᴍᴀʟᴀᴍ'
-        }
     
     const chatType = isChannel ? 'Channel' : isGroup ? 'Group' : 'Private';
     console.log(`⚡ [${chatType}] ${levelName} ${pushName}: ${cmd} ${commandArgs.join(' ')}`);
     
     if (!hasPermission(senderNumber, cmd, pushName)) {
         await sock.sendMessage(from, {
-            text: `🔒 *Akses Ditolak!*\n\n` +
-                  `Command *${prefix}${cmd}* membutuhkan level yang lebih tinggi.\n\n` +
-                  `👤 Level kamu: ${levelName}\n` +
-                  `🔑 Dibutuhkan: Partner atau Owner\n\n` +
-                  `💡 Hubungi owner untuk jadi partner.`
+            text: `🔒 *Akses Ditolak!*\n\nCommand *${prefix}${cmd}* membutuhkan level yang lebih tinggi.\n\n👤 Level kamu: ${levelName}\n🔑 Dibutuhkan: Partner atau Owner\n\n💡 Hubungi owner untuk jadi partner.`
         });
         return;
     }
@@ -304,34 +404,47 @@ module.exports = async function(sock, messageInfo) {
                 await cmdMyLevel(sock, from, pushName, senderNumber);
                 break;
                 
+            case 'tqto':
+            case 'thanks':
+            case 'thanksto':
+            case 'credits':
+            case 'credit':
+            case 'specialthanks':
+                await cmdTqto(sock, from);
+                break;
+                
+            case 'toaudio':
+            case 'mp3':
+            case 'audio':
+                await cmdToAudio(sock, from, commandArgs, messageInfo);
+                break;
+                
+            case 'toptt':
+            case 'ptt':
+            case 'voice':
+                await cmdToPTT(sock, from, commandArgs, messageInfo);
+                break;
+                
+            case 'convert':
+            case 'converter':
+                await cmdConvert(sock, from, commandArgs, messageInfo);
+                break;
+                
             default:
                 if (cmd) {
-                    const suggestions = suggestCommand(cmd, 0.3, 5);
+                    // Gunakan didyoumean untuk suggest command
+                    didYouMean.threshold = 0.4;
+                    didYouMean.caseSensitive = false;
                     
-                    if (suggestions.length > 0) {
-                        const suggestionText = formatSuggestion(cmd, suggestions, prefix);
-                        
-                        const suggestionMsg = {
-                            text: suggestionText,
-                            footer: '💡 Command Suggestion System',
-                            buttons: suggestions.slice(0, 3).map((s, i) => ({
-                                buttonId: `${prefix}${s.cmd}`,
-                                buttonText: { displayText: `${i === 0 ? '⭐ ' : ''}${prefix}${s.cmd}` },
-                                type: 1
-                            })),
-                            viewOnce: false
-                        };
-
-                        try {
-                            await sock.sendMessage(from, suggestionMsg);
-                        } catch (e) {
-                            await sock.sendMessage(from, { text: suggestionText });
-                        }
+                    const suggestion = didYouMean(cmd, allCommands);
+                    
+                    if (suggestion && suggestion !== cmd) {
+                        await sock.sendMessage(from, { 
+                            text: `❌ *Command tidak ditemukan!*\n\nCommand *${prefix}${cmd}* tidak ditemukan.\n\n💡 Mungkin maksud kamu: *${prefix}${suggestion}*\n\nKetik *${prefix}menu* untuk melihat semua command.`
+                        });
                     } else {
                         await sock.sendMessage(from, { 
-                            text: `❌ *Unknown Command*\n\n` +
-                                  `Command *${prefix}${cmd}* tidak ditemukan.\n\n` +
-                                  `Ketik *${prefix}menu* untuk melihat semua command.`
+                            text: `❌ *Unknown Command*\n\nCommand *${prefix}${cmd}* tidak ditemukan.\n\nKetik *${prefix}menu* untuk melihat semua command.`
                         });
                     }
                 }
@@ -349,160 +462,113 @@ module.exports = async function(sock, messageInfo) {
 
 async function cmdInfo(sock, from) {
     const prefix = global.botConfig.prefix;
-    const sections = [
-        {
-            title: '📋 *INFO BOT*',
-            rows: [
-                { title: '🤖 Info Bot', description: 'Lihat informasi lengkap tentang bot', id: `${prefix}info` },
-                { title: '👤 Owner Bot', description: 'Kontak dan info owner/pembuat bot', id: `${prefix}owner` },
-                { title: '👩‍🏫 Wali Kelas', description: 'Informasi wali kelas 8C', id: `${prefix}walas` }
-            ]
-        },
-        {
-            title: '📅 *JADWAL SEKOLAH*',
-            rows: [
-                { title: '📆 Jadwal Hari Ini', description: 'Lihat jadwal pelajaran hari ini', id: `${prefix}today` },
-                { title: '📅 Reminder Besok', description: 'Lihat jadwal pelajaran untuk besok', id: `${prefix}tomorrow` },
-                { title: '📚 Jadwal Mapel', description: 'Cari jadwal per hari (senin-jumat)', id: `${prefix}mapel senin` },
-                { title: '🧹 Jadwal Piket', description: 'Lihat jadwal piket per hari', id: `${prefix}piket` },
-                { title: '📖 Jadwal Lengkap', description: 'Lihat seluruh jadwal dan piket', id: `${prefix}jadwal` }
-            ]
-        },
-        {
-            title: '⏰ *REMINDER*',
-            rows: [
-                { title: '📋 Status Reminder', description: 'Cek status sistem reminder otomatis', id: `${prefix}reminder` },
-                { title: '📤 Kirim Reminder', description: 'Kirim reminder manual (owner only)', id: `${prefix}sendreminder` }
-            ]
-        },
-        {
-            title: '🎬 *ALIGHT MOTION*',
-            rows: [
-                { title: '✨ Generate Premium', description: 'Generate Alight Motion Premium 1 Tahun', id: `${prefix}alight` }
-            ]
-        },
-        {
-            title: '🎵 *SONGFESS*',
-            rows: [
-                { title: '🎵 Kirim SongFess', description: 'Kirim lagu + pesan ke channel', id: `${prefix}songfess` }
-            ]
-        },
-        {
-            title: '💌 *MENFESS / CONFESS*',
-            rows: [
-                { title: '💌 Kirim Menfess', description: 'Kirim pesan anonim ke seseorang', id: `${prefix}menfess` }
-            ]
-        },
-        {
-            title: '🎨 *STICKER MAKER*',
-            rows: [
-                { title: '🎨 Buat Sticker', description: 'Buat sticker dari foto/video (max 15s)', id: `${prefix}sticker` }
-            ]
-        },
-        {
-            title: '📚 *PR / TUGAS*',
-            rows: [
-                { title: '📝 Tambah PR', description: 'Tambah PR/tugas baru (partner)', id: `${prefix}addpr` },
-                { title: '📋 Daftar PR', description: 'Lihat daftar PR/tugas', id: `${prefix}pr` }
-            ]
-        },
-        {
-            title: '🔍 *SEARCH*',
-            rows: [
-                { title: '🔍 Cari Command', description: 'Cari command berdasarkan kata kunci', id: `${prefix}search` }
-            ]
-        },
-        {
-            title: '🛠️ *UTILITY*',
-            rows: [
-                { title: '🆔 Get ID Chat', description: 'Lihat ID chat untuk konfigurasi bot', id: `${prefix}getid` },
-                { title: '🏓 Ping', description: 'Cek status bot', id: `${prefix}ping` },
-                { title: '⭐ My Level', description: 'Cek level & permission kamu', id: `${prefix}mylevel` }
-            ]
-        }
+    
+    const buttons = [
+        { buttonId: `${prefix}owner`, buttonText: { displayText: '👑 Owner' }, type: 1 },
+        { buttonId: `${prefix}today`, buttonText: { displayText: '📅 Hari Ini' }, type: 1 },
+        { buttonId: `${prefix}tqto`, buttonText: { displayText: '🙏 Credits' }, type: 1 },
+        { buttonId: `${prefix}mylevel`, buttonText: { displayText: '👤 My Level' }, type: 1 },
+        { buttonId: `${prefix}ping`, buttonText: { displayText: '🏓 Ping' }, type: 1 }
     ];
-
-    const message = {
-        image: { url: 'https://files.catbox.moe/placeholder.jpg' },
-        caption: `╔══════════════════════════╗\n` +
+    
+    const text = `╔══════════════════════════╗\n` +
                  `║     🤖 ${global.botConfig.name}     ║\n` +
                  `║   v${global.botConfig.version}  |  By ${global.botConfig.owner}   ║\n` +
                  `╚══════════════════════════╝\n\n` +
-                 `📌 *Pilih menu di bawah ini:*\n\n` +
-                 `⏰ Reminder Otomatis:\n` +
-                 `🌅 12:00 | ☀️ 16:00 | 🌙 20:00`,
-        footer: '© 2024 School Assistant Bot',
-        buttons: [
-            { buttonId: `${prefix}today`, buttonText: { displayText: '📅 Hari Ini' }, type: 1 },
-            { buttonId: `${prefix}tomorrow`, buttonText: { displayText: '🔮 Besok' }, type: 1 },
-            { buttonId: `${prefix}songfess`, buttonText: { displayText: '🎵 SongFess' }, type: 1 }
-        ],
-        viewOnce: false
-    };
-
-    try {
-        await sock.sendMessage(from, message);
-    } catch (e) {
-        await sock.sendMessage(from, {
-            text: `╔══════════════════════════╗\n` +
-                  `║     🤖 ${global.botConfig.name}     ║\n` +
-                  `║   v${global.botConfig.version}  |  By ${global.botConfig.owner}   ║\n` +
-                  `╚══════════════════════════╝\n\n` +
-                  `📌 *DAFTAR COMMAND*\n\n` +
-                  `📋 *Info:* ${prefix}info, ${prefix}owner, ${prefix}walas\n` +
-                  `📅 *Jadwal:* ${prefix}today, ${prefix}tomorrow, ${prefix}mapel, ${prefix}piket, ${prefix}jadwal\n` +
-                  `⏰ *Reminder:* ${prefix}reminder, ${prefix}sendreminder\n` +
-                  `🎬 *Alight:* ${prefix}alight\n` +
-                  `🎵 *SongFess:* ${prefix}songfess\n` +
-                  `💌 *Menfess:* ${prefix}menfess\n` +
-                  `🎨 *Sticker:* ${prefix}s\n` +
-                  `📚 *PR:* ${prefix}pr, ${prefix}addpr, ${prefix}delpr\n` +
-                  `🔍 *Search:* ${prefix}search\n` +
-                  `🛠️ *Utility:* ${prefix}getid, ${prefix}ping, ${prefix}mylevel`
-        });
-    }
+                 `📌 *DAFTAR COMMAND*\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+                 `📋 *Info:*\n` +
+                 `  ${prefix}info - Info bot\n` +
+                 `  ${prefix}owner - Info owner\n` +
+                 `  ${prefix}walas - Info wali kelas\n\n` +
+                 `📅 *Jadwal:*\n` +
+                 `  ${prefix}today - Jadwal hari ini\n` +
+                 `  ${prefix}tomorrow - Reminder besok\n` +
+                 `  ${prefix}mapel [hari] - Jadwal mapel\n` +
+                 `  ${prefix}piket [hari] - Jadwal piket\n` +
+                 `  ${prefix}jadwal - Semua jadwal\n\n` +
+                 `⏰ *Reminder:*\n` +
+                 `  ${prefix}reminder - Info reminder\n` +
+                 `  ${prefix}sendreminder - Kirim manual\n\n` +
+                 `🎬 *Alight Motion:*\n` +
+                 `  ${prefix}alight - Generate premium\n\n` +
+                 `🎵 *SongFess:*\n` +
+                 `  ${prefix}songfess - Kirim lagu ke channel\n\n` +
+                 `💌 *Menfess:*\n` +
+                 `  ${prefix}menfess - Pesan anonim\n\n` +
+                 `🎨 *Sticker:*\n` +
+                 `  ${prefix}s - Buat sticker\n\n` +
+                 `🎵 *Converter:*\n` +
+                 `  ${prefix}toaudio - Convert ke audio\n` +
+                 `  ${prefix}toptt - Convert ke voice note\n` +
+                 `  ${prefix}convert - Convert video ke audio\n\n` +
+                 `📚 *PR/Tugas:*\n` +
+                 `  ${prefix}addpr - Tambah PR\n` +
+                 `  ${prefix}delpr - Hapus PR\n` +
+                 `  ${prefix}pr - Daftar PR\n\n` +
+                 `⭐ *Partner:*\n` +
+                 `  ${prefix}addpartner - Tambah partner\n` +
+                 `  ${prefix}delpartner - Hapus partner\n` +
+                 `  ${prefix}listpartner - List partner\n\n` +
+                 `📢 *Channel/Group:*\n` +
+                 `  ${prefix}addch - Tambah channel\n` +
+                 `  ${prefix}delch - Hapus channel\n` +
+                 `  ${prefix}listch - List channel\n` +
+                 `  ${prefix}addgroup - Tambah group\n` +
+                 `  ${prefix}delgroup - Hapus group\n` +
+                 `  ${prefix}listgroup - List group\n` +
+                 `  ${prefix}bc - Broadcast\n\n` +
+                 `🔍 *Search:*\n` +
+                 `  ${prefix}search - Cari command\n\n` +
+                 `🛠️ *Utility:*\n` +
+                 `  ${prefix}getid - Lihat ID chat\n` +
+                 `  ${prefix}ping - Cek status bot\n` +
+                 `  ${prefix}mylevel - Cek level user\n` +
+                 `  ${prefix}tqto - Credits & Thanks\n\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━\n` +
+                 `⏰ Reminder otomatis:\n` +
+                 `🌅 12:00 | ☀️ 16:00 | 🌙 20:00\n\n` +
+                 `💡 Contoh: ${prefix}mapel senin\n` +
+                 `         ${prefix}piket 1`;
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1
+    });
 }
 
 async function cmdOwner(sock, from) {
     const ownerNumber = global.botConfig.noOwner.replace(/^0/, '62');
     
-    const message = {
-        image: { url: 'https://files.catbox.moe/owner-banner.jpg' },
-        caption: `╔══════════════════════════╗\n` +
+    const buttons = [
+        { buttonId: `https://wa.me/${ownerNumber}`, buttonText: { displayText: '📞 Hubungi Owner' }, type: 1 },
+        { buttonId: `${global.botConfig.prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+    ];
+    
+    const text = `╔══════════════════════════╗\n` +
                  `║       👤 OWNER BOT       ║\n` +
                  `╚══════════════════════════╝\n\n` +
                  `👤 *Nama:* ${global.botConfig.owner}\n` +
                  `📞 *WhatsApp:* ${global.botConfig.noOwner}\n` +
                  `💬 *Telegram:* @ndiidepzX\n\n` +
-                 `📧 *Email:* owner@example.com\n\n` +
+                 `🔗 *Link WA:* https://wa.me/${ownerNumber}\n\n` +
                  `💡 Untuk pertanyaan atau request,\n` +
-                 `silakan hubungi owner melalui tombol di bawah.`,
-        footer: '👆 Klik tombol untuk menghubungi owner',
-        buttons: [
-            { buttonId: 'owner_chat', buttonText: { displayText: '💬 Chat Owner' }, type: 1 },
-            { buttonId: 'owner_profile', buttonText: { displayText: '👤 Profil Owner' }, type: 1 }
-        ],
-        viewOnce: false
-    };
-
-    try {
-        await sock.sendMessage(from, message);
-    } catch (e) {
-        await sock.sendMessage(from, {
-            text: `╔══════════════════════════╗\n` +
-                  `║       👤 OWNER BOT       ║\n` +
-                  `╚══════════════════════════╝\n\n` +
-                  `👤 Nama: *${global.botConfig.owner}*\n` +
-                  `📞 WhatsApp: *${global.botConfig.noOwner}*\n` +
-                  `💬 Telegram: @ndiidepzX\n\n` +
-                  `🔗 Link WA: https://wa.me/${ownerNumber}\n\n` +
-                  `💡 Untuk pertanyaan atau request,\n` +
-                  `silakan hubungi owner.`
-        });
-    }
+                 `silakan hubungi owner.`;
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1
+    });
 }
 
 async function cmdWalas(sock, from) {
+    const buttons = [
+        { buttonId: `${global.botConfig.prefix}info`, buttonText: { displayText: '📋 Menu' }, type: 1 },
+        { buttonId: `${global.botConfig.prefix}today`, buttonText: { displayText: '📅 Hari Ini' }, type: 1 }
+    ];
+    
     const text = `╔══════════════════════════╗\n` +
                  `║    👩‍🏫 WALI KELAS 8C     ║\n` +
                  `╚══════════════════════════╝\n\n` +
@@ -515,7 +581,11 @@ async function cmdWalas(sock, from) {
                  `   Sabtu: 08.00 - 12.00\n\n` +
                  `📍 Ruang: Kantor Guru Lt. 2`;
     
-    await sock.sendMessage(from, { text });
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1
+    });
 }
 
 async function cmdToday(sock, from) {
@@ -523,14 +593,15 @@ async function cmdToday(sock, from) {
         const data = schoolData.getTodayReminder();
         const text = schoolData.formatReminderText(data);
         
-        await sock.sendMessage(from, { 
+        const buttons = [
+            { buttonId: `${global.botConfig.prefix}tomorrow`, buttonText: { displayText: '📅 Besok' }, type: 1 },
+            { buttonId: `${global.botConfig.prefix}jadwal`, buttonText: { displayText: '📚 Jadwal' }, type: 1 }
+        ];
+        
+        await sock.sendMessage(from, {
             text: text,
-            footer: '📅 Jadwal Hari Ini',
-            buttons: [
-                { buttonId: `${global.botConfig.prefix}tomorrow`, buttonText: { displayText: '🔮 Lihat Besok' }, type: 1 },
-                { buttonId: `${global.botConfig.prefix}jadwal`, buttonText: { displayText: '📖 Jadwal Lengkap' }, type: 1 }
-            ],
-            viewOnce: false
+            buttons: buttons,
+            headerType: 1
         });
     } catch (e) {
         await sock.sendMessage(from, { text: '❌ Gagal mengambil jadwal hari ini.' });
@@ -542,14 +613,15 @@ async function cmdTomorrow(sock, from) {
         const data = schoolData.getTomorrowReminder();
         const text = schoolData.formatReminderText(data);
         
-        await sock.sendMessage(from, { 
+        const buttons = [
+            { buttonId: `${global.botConfig.prefix}today`, buttonText: { displayText: '📅 Hari Ini' }, type: 1 },
+            { buttonId: `${global.botConfig.prefix}reminder`, buttonText: { displayText: '⏰ Reminder' }, type: 1 }
+        ];
+        
+        await sock.sendMessage(from, {
             text: text,
-            footer: '🔮 Reminder Besok',
-            buttons: [
-                { buttonId: `${global.botConfig.prefix}today`, buttonText: { displayText: '📅 Hari Ini' }, type: 1 },
-                { buttonId: `${global.botConfig.prefix}reminder`, buttonText: { displayText: '⏰ Info Reminder' }, type: 1 }
-            ],
-            viewOnce: false
+            buttons: buttons,
+            headerType: 1
         });
     } catch (e) {
         await sock.sendMessage(from, { text: '❌ Gagal mengambil reminder besok.' });
@@ -560,41 +632,21 @@ async function cmdMapel(sock, from, args) {
     const prefix = global.botConfig.prefix;
     
     if (args.length === 0) {
-        const sections = [
-            {
-                title: '📅 *PILIH HARI*',
-                highlight_label: 'Hari Aktif',
-                rows: [
-                    { title: '📆 Senin', description: 'Jadwal pelajaran hari Senin', id: `${prefix}mapel senin` },
-                    { title: '📆 Selasa', description: 'Jadwal pelajaran hari Selasa', id: `${prefix}mapel selasa` },
-                    { title: '📆 Rabu', description: 'Jadwal pelajaran hari Rabu', id: `${prefix}mapel rabu` },
-                    { title: '📆 Kamis', description: 'Jadwal pelajaran hari Kamis', id: `${prefix}mapel kamis` },
-                    { title: '📆 Jumat', description: 'Jadwal pelajaran hari Jumat', id: `${prefix}mapel jumat` }
-                ]
-            }
+        const text = `📅 *PILIH HARI*\n\nGunakan: ${prefix}mapel <hari>\n\n📌 Pilihan hari:\n  • senin / 1\n  • selasa / 2\n  • rabu / 3\n  • kamis / 4\n  • jumat / 5\n\n💡 Contoh: ${prefix}mapel senin`;
+        
+        const buttons = [
+            { buttonId: `${prefix}mapel senin`, buttonText: { displayText: '📆 Senin' }, type: 1 },
+            { buttonId: `${prefix}mapel selasa`, buttonText: { displayText: '📆 Selasa' }, type: 1 },
+            { buttonId: `${prefix}mapel rabu`, buttonText: { displayText: '📆 Rabu' }, type: 1 },
+            { buttonId: `${prefix}mapel kamis`, buttonText: { displayText: '📆 Kamis' }, type: 1 },
+            { buttonId: `${prefix}mapel jumat`, buttonText: { displayText: '📆 Jumat' }, type: 1 }
         ];
-
-        const message = {
-            text: '📅 *PILIH HARI*\n\nSilakan pilih hari untuk melihat jadwal pelajaran:',
-            footer: 'Klik hari yang diinginkan',
-            buttonText: '📋 Pilih Hari',
-            sections: sections
-        };
-
-        try {
-            await sock.sendMessage(from, message);
-        } catch (e) {
-            await sock.sendMessage(from, { 
-                text: `❌ *Cara Penggunaan:*\n\n` +
-                      `${prefix}mapel <hari>\n\n` +
-                      `📅 Contoh:\n` +
-                      `  ${prefix}mapel senin\n` +
-                      `  ${prefix}mapel 1\n` +
-                      `  ${prefix}mapel selasa\n` +
-                      `  ${prefix}mapel 2\n\n` +
-                      `📌 1=Senin, 2=Selasa, 3=Rabu, 4=Kamis, 5=Jumat`
-            });
-        }
+        
+        await sock.sendMessage(from, {
+            text: text,
+            buttons: buttons,
+            headerType: 1
+        });
         return;
     }
     
@@ -613,61 +665,46 @@ async function cmdMapel(sock, from, args) {
     
     Object.entries(result.schedule).forEach(([key, lesson]) => {
         if (lesson.subject === 'ISTIRAHAT') {
-            text += `┌─────────────────────────┐\n`;
-            text += `│  🍽️  *I S T I R A H A T*  │\n`;
-            text += `│  ⏰ ${lesson.time.padEnd(22)} │\n`;
-            text += `└─────────────────────────┘\n\n`;
+            text += `🍽️  *Istirahat*\n   ⏰ ${lesson.time}\n\n`;
         } else {
-            text += `┌─────────────────────────┐\n`;
-            text += `│  📚 *Jam ke-${key}*${' '.repeat(15 - key.length)}│\n`;
-            text += `│  📖 ${lesson.subject.padEnd(22)} │\n`;
-            text += `│  ⏰ ${lesson.time.padEnd(22)} │\n`;
-            text += `│  👨‍🏫 ${lesson.teacher.padEnd(22)} │\n`;
-            text += `└─────────────────────────┘\n\n`;
+            text += `📚 *Jam ke-${key}*\n`;
+            text += `   📖 ${lesson.subject}\n`;
+            text += `   ⏰ ${lesson.time}\n`;
+            text += `   👨‍🏫 ${lesson.teacher}\n\n`;
         }
     });
     
-    await sock.sendMessage(from, { text });
+    const buttons = [
+        { buttonId: `${prefix}piket ${args[0]}`, buttonText: { displayText: '🧹 Piket' }, type: 1 },
+        { buttonId: `${prefix}jadwal`, buttonText: { displayText: '📚 Full' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1
+    });
 }
 
 async function cmdPiket(sock, from, args) {
     const prefix = global.botConfig.prefix;
     
     if (args.length === 0) {
-        const sections = [
-            {
-                title: '🧹 *PILIH HARI PIKET*',
-                highlight_label: 'Hari Piket',
-                rows: [
-                    { title: '🧹 Senin', description: 'Anggota piket hari Senin', id: `${prefix}piket senin` },
-                    { title: '🧹 Selasa', description: 'Anggota piket hari Selasa', id: `${prefix}piket selasa` },
-                    { title: '🧹 Rabu', description: 'Anggota piket hari Rabu', id: `${prefix}piket rabu` },
-                    { title: '🧹 Kamis', description: 'Anggota piket hari Kamis', id: `${prefix}piket kamis` },
-                    { title: '🧹 Jumat', description: 'Anggota piket hari Jumat', id: `${prefix}piket jumat` }
-                ]
-            }
+        const text = `🧹 *PILIH HARI PIKET*\n\nGunakan: ${prefix}piket <hari>\n\n📌 Pilihan hari:\n  • senin / 1\n  • selasa / 2\n  • rabu / 3\n  • kamis / 4\n  • jumat / 5\n\n💡 Contoh: ${prefix}piket senin`;
+        
+        const buttons = [
+            { buttonId: `${prefix}piket senin`, buttonText: { displayText: '🧹 Senin' }, type: 1 },
+            { buttonId: `${prefix}piket selasa`, buttonText: { displayText: '🧹 Selasa' }, type: 1 },
+            { buttonId: `${prefix}piket rabu`, buttonText: { displayText: '🧹 Rabu' }, type: 1 },
+            { buttonId: `${prefix}piket kamis`, buttonText: { displayText: '🧹 Kamis' }, type: 1 },
+            { buttonId: `${prefix}piket jumat`, buttonText: { displayText: '🧹 Jumat' }, type: 1 }
         ];
-
-        const message = {
-            text: '🧹 *PILIH HARI PIKET*\n\nSilakan pilih hari untuk melihat jadwal piket:',
-            footer: 'Klik hari yang diinginkan',
-            buttonText: '🧹 Pilih Hari',
-            sections: sections
-        };
-
-        try {
-            await sock.sendMessage(from, message);
-        } catch (e) {
-            await sock.sendMessage(from, { 
-                text: `❌ *Cara Penggunaan:*\n\n` +
-                      `${prefix}piket <hari>\n\n` +
-                      `📅 Contoh:\n` +
-                      `  ${prefix}piket senin\n` +
-                      `  ${prefix}piket 1\n` +
-                      `  ${prefix}piket jumat\n\n` +
-                      `📌 1=Senin, 2=Selasa, 3=Rabu, 4=Kamis, 5=Jumat`
-            });
-        }
+        
+        await sock.sendMessage(from, {
+            text: text,
+            buttons: buttons,
+            headerType: 1
+        });
         return;
     }
     
@@ -683,41 +720,30 @@ async function cmdPiket(sock, from, args) {
     let text = `╔══════════════════════════╗\n`;
     text += `║  🧹 PIKET ${result.day.toUpperCase().padEnd(17)} ║\n`;
     text += `╚══════════════════════════╝\n\n`;
-    text += `┌─────────────────────────┐\n`;
-    text += `│  👥 *ANGGOTA PIKET*     │\n`;
-    text += `├─────────────────────────┤\n`;
+    text += `👥 *Anggota Piket:*\n\n`;
     
     result.members.forEach((name, i) => {
-        const num = (i + 1).toString();
-        text += `│  ${num}. ${name.padEnd(22)} │\n`;
+        text += `   ${i + 1}. ${name}\n`;
     });
     
-    text += `├─────────────────────────┤\n`;
-    text += `│  📌 *TUGAS PIKET:*      │\n`;
-    text += `│  • Bersihkan ruang      │\n`;
-    text += `│  • Hapus papan tulis    │\n`;
-    text += `│  • Rapikan meja & kursi │\n`;
-    text += `│  • Buang sampah         │\n`;
-    text += `│  • Sapu & pel lantai    │\n`;
-    text += `└─────────────────────────┘\n\n`;
-    text += `💡 *Note:* Jangan lupa membawa\n`;
-    text += `peralatan kebersihan masing-masing ✨`;
+    text += `\n📌 *Tugas Piket:*\n`;
+    text += `   • Membersihkan ruang kelas\n`;
+    text += `   • Menghapus papan tulis\n`;
+    text += `   • Merapikan meja dan kursi\n`;
+    text += `   • Membuang sampah\n`;
+    text += `   • Menyapu dan mengepel lantai\n\n`;
+    text += `💡 Jangan lupa bawa peralatan kebersihan ✨`;
     
-    const message = {
+    const buttons = [
+        { buttonId: `${prefix}mapel ${args[0]}`, buttonText: { displayText: '📚 Mapel' }, type: 1 },
+        { buttonId: `${prefix}jadwal`, buttonText: { displayText: '📚 Full' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
         text: text,
-        footer: '🧹 Piket Kelas 8C',
-        buttons: [
-            { buttonId: `${prefix}piket`, buttonText: { displayText: '🔄 Cek Hari Lain' }, type: 1 },
-            { buttonId: `${prefix}jadwal`, buttonText: { displayText: '📖 Jadwal Lengkap' }, type: 1 }
-        ],
-        viewOnce: false
-    };
-
-    try {
-        await sock.sendMessage(from, message);
-    } catch (e) {
-        await sock.sendMessage(from, { text });
-    }
+        buttons: buttons,
+        headerType: 1
+    });
 }
 
 async function cmdJadwal(sock, from) {
@@ -726,14 +752,12 @@ async function cmdJadwal(sock, from) {
         text += `║  📚 JADWAL KELAS 8C     ║\n`;
         text += `╚══════════════════════════╝\n\n`;
         
-        text += `┌─────────────────────────┐\n`;
-        text += `│  📅 *JADWAL PELAJARAN*  │\n`;
-        text += `└─────────────────────────┘\n\n`;
+        text += `📅 *JADWAL PELAJARAN*\n`;
+        text += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
         
         const fullSchedule = schoolData.getFullSchedule();
         for (const [day, lessons] of Object.entries(fullSchedule)) {
             text += `📆 *${day.toUpperCase()}*\n`;
-            text += `─────────────────────────\n`;
             Object.values(lessons).forEach(lesson => {
                 if (lesson.subject === 'ISTIRAHAT') {
                     text += `   🍽️  Istirahat (${lesson.time})\n`;
@@ -744,19 +768,22 @@ async function cmdJadwal(sock, from) {
             text += `\n`;
         }
         
-        text += `┌─────────────────────────┐\n`;
-        text += `│  🧹 *JADWAL PIKET*      │\n`;
-        text += `└─────────────────────────┘\n\n`;
+        text += `🧹 *JADWAL PIKET*\n`;
+        text += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
         
         const fullPiket = schoolData.getFullPiket();
         for (const [day, members] of Object.entries(fullPiket)) {
             text += `📆 *${day.toUpperCase()}:*\n`;
-            text += `─────────────────────────\n`;
             members.forEach((name, i) => {
                 text += `   ${i + 1}. ${name}\n`;
             });
             text += `\n`;
         }
+        
+        const buttons = [
+            { buttonId: `${global.botConfig.prefix}today`, buttonText: { displayText: '📅 Hari Ini' }, type: 1 },
+            { buttonId: `${global.botConfig.prefix}tomorrow`, buttonText: { displayText: '📅 Besok' }, type: 1 }
+        ];
         
         if (text.length > 4000) {
             const parts = text.match(/[\s\S]{1,4000}/g) || [text];
@@ -765,7 +792,11 @@ async function cmdJadwal(sock, from) {
                 await new Promise(r => setTimeout(r, 500));
             }
         } else {
-            await sock.sendMessage(from, { text });
+            await sock.sendMessage(from, {
+                text: text,
+                buttons: buttons,
+                headerType: 1
+            });
         }
     } catch (e) {
         await sock.sendMessage(from, { text: '❌ Gagal mengambil jadwal lengkap.' });
@@ -773,30 +804,22 @@ async function cmdJadwal(sock, from) {
 }
 
 async function cmdSendReminder(sock, from, pushName) {
-    const ownerNumber = global.botConfig.noOwner.replace(/^0/, '62');
-    const senderNumber = from.split('@')[0];
-    
-    if (pushName !== global.botConfig.owner && 
-        senderNumber !== ownerNumber &&
-        !senderNumber.includes(ownerNumber)) {
-        await sock.sendMessage(from, { 
-            text: '❌ *Akses Ditolak*\n\nHanya owner yang bisa mengirim reminder manual.\n\n' +
-                  '👤 Owner: ' + global.botConfig.owner
-        });
-        return;
-    }
-    
     await sock.sendMessage(from, { text: '🔄 *Mengirim reminder...*\n\nMohon tunggu sebentar...' });
     
     try {
         await reminderSystem.sendManualReminder();
         
-        await sock.sendMessage(from, { 
-            text: '✅ *Reminder berhasil dikirim!*\n\n' +
-                  '📢 Terkirim ke:\n' +
-                  '   • Channel WhatsApp\n' +
-                  '   • Grup WhatsApp\n\n' +
-                  `⏰ Waktu: ${new Date().toLocaleTimeString('id-ID')}`
+        const text = `✅ *Reminder berhasil dikirim!*\n\n📢 Terkirim ke:\n   • Channel WhatsApp\n   • Grup WhatsApp\n\n⏰ Waktu: ${new Date().toLocaleTimeString('id-ID')}`;
+        
+        const buttons = [
+            { buttonId: `${global.botConfig.prefix}reminder`, buttonText: { displayText: '⏰ Reminder' }, type: 1 },
+            { buttonId: `${global.botConfig.prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+        ];
+        
+        await sock.sendMessage(from, {
+            text: text,
+            buttons: buttons,
+            headerType: 1
         });
     } catch (e) {
         await sock.sendMessage(from, { 
@@ -825,16 +848,23 @@ async function cmdReminderMenu(sock, from) {
                  `   ${prefix}tomorrow - Lihat reminder\n` +
                  `   ${prefix}sendreminder - Kirim manual`;
     
-    await sock.sendMessage(from, { text });
+    const buttons = [
+        { buttonId: `${prefix}tomorrow`, buttonText: { displayText: '📅 Besok' }, type: 1 },
+        { buttonId: `${prefix}sendreminder`, buttonText: { displayText: '📤 Kirim' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1
+    });
 }
 
 async function cmdAlightMotion(sock, from, args, pushName) {
     const prefix = global.botConfig.prefix;
     
     if (args.length === 0) {
-        const message = {
-            image: { url: 'https://files.catbox.moe/alight-banner.jpg' },
-            caption: `╔══════════════════════════╗\n` +
+        const text = `╔══════════════════════════╗\n` +
                      `║  ✨ ALIGHT MOTION GEN   ║\n` +
                      `║    PREMIUM GENERATOR    ║\n` +
                      `╚══════════════════════════╝\n\n` +
@@ -848,28 +878,18 @@ async function cmdAlightMotion(sock, from, args, pushName) {
                      `💡 *Contoh Step 1:*\n` +
                      `${prefix}alight user@gmail.com\n\n` +
                      `💡 *Contoh Step 2:*\n` +
-                     `${prefix}alight user@gmail.com https://alightcreative.com/verify?code=xxx`,
-            footer: 'Powered by rafaelxd.my.id',
-            buttons: [
-                { buttonId: `${prefix}alight guide`, buttonText: { displayText: '📖 Panduan Lengkap' }, type: 1 },
-                { buttonId: `${prefix}owner`, buttonText: { displayText: '👤 Bantuan Owner' }, type: 1 }
-            ],
-            viewOnce: false
-        };
-
-        try {
-            await sock.sendMessage(from, message);
-        } catch (e) {
-            await sock.sendMessage(from, {
-                text: `╔══════════════════════════╗\n` +
-                      `║  ✨ ALIGHT MOTION GEN   ║\n` +
-                      `╚══════════════════════════╝\n\n` +
-                      `📌 *Cara Penggunaan:*\n\n` +
-                      `*Step 1:* ${prefix}alight email@gmail.com\n` +
-                      `*Step 2:* ${prefix}alight email@gmail.com link_raw\n\n` +
-                      `💡 Contoh: ${prefix}alight user@gmail.com`
-            });
-        }
+                     `${prefix}alight user@gmail.com https://alightcreative.com/verify?code=xxx`;
+        
+        const buttons = [
+            { buttonId: `${prefix}alight help`, buttonText: { displayText: '📖 Bantuan' }, type: 1 },
+            { buttonId: `${prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+        ];
+        
+        await sock.sendMessage(from, {
+            text: text,
+            buttons: buttons,
+            headerType: 1
+        });
         return;
     }
 
@@ -878,61 +898,38 @@ async function cmdAlightMotion(sock, from, args, pushName) {
         
         if (!email.includes('@') || !email.includes('.')) {
             await sock.sendMessage(from, {
-                text: '❌ *Email tidak valid!*\n\n' +
-                      'Format: nama@domain.com\n\n' +
-                      `Contoh: ${prefix}alight user@gmail.com`
+                text: '❌ *Email tidak valid!*\n\nFormat: nama@domain.com\n\nContoh: ${prefix}alight user@gmail.com'
             });
             return;
         }
 
         await sock.sendMessage(from, { 
-            text: '🔄 *Mengirim magic link...*\n\n' +
-                  `📧 Email: ${email}\n\n` +
-                  '⏳ Mohon tunggu sebentar...'
+            text: '🔄 *Mengirim magic link...*\n\n📧 Email: ${email}\n\n⏳ Mohon tunggu sebentar...'
         });
 
         try {
             const result = await alightMotion(email);
 
             if (result.success) {
-                const text = `✅ *Magic Link Terkirim!*\n\n` +
-                            `📧 *Email:* ${email}\n` +
-                            `📝 *Order Code:* ${result.orderCode || 'N/A'}\n\n` +
-                            `📌 *LANGKAH SELANJUTNYA:*\n\n` +
-                            `1️⃣ Buka inbox email kamu (cek folder Spam juga)\n` +
-                            `2️⃣ Cari email dari "Alight Motion" / "Alight Creative"\n` +
-                            `3️⃣ Tekan-tahan tombol "Login ke Alight Creative"\n` +
-                            `4️⃣ Pilih "Salin URL" (jangan klik langsung!)\n` +
-                            `5️⃣ Kirim link yang dicopy dengan command:\n` +
-                            `   ${prefix}alight ${email} <link>\n\n` +
-                            `⚠️ *PENTING:* Jangan klik link langsung,\n` +
-                            `copy link-nya saja!`;
-
-                const message = {
+                const text = `✅ *Magic Link Terkirim!*\n\n📧 *Email:* ${email}\n📝 *Order Code:* ${result.orderCode || 'N/A'}\n\n📌 *LANGKAH SELANJUTNYA:*\n\n1️⃣ Buka inbox email kamu (cek folder Spam juga)\n2️⃣ Cari email dari "Alight Motion" / "Alight Creative"\n3️⃣ Tekan-tahan tombol "Login ke Alight Creative"\n4️⃣ Pilih "Salin URL" (jangan klik langsung!)\n5️⃣ Kirim link yang dicopy dengan command:\n   ${prefix}alight ${email} <link>\n\n⚠️ *PENTING:* Jangan klik link langsung,\ncopy link-nya saja!`;
+                
+                const buttons = [
+                    { buttonId: `${prefix}alight help`, buttonText: { displayText: '📖 Bantuan' }, type: 1 }
+                ];
+                
+                await sock.sendMessage(from, {
                     text: text,
-                    footer: 'Alight Motion Generator',
-                    buttons: [
-                        { buttonId: `${prefix}alight ${email}`, buttonText: { displayText: '📋 Copy Command' }, type: 1 }
-                    ],
-                    viewOnce: false
-                };
-
-                try {
-                    await sock.sendMessage(from, message);
-                } catch (e) {
-                    await sock.sendMessage(from, { text });
-                }
+                    buttons: buttons,
+                    headerType: 1
+                });
             } else {
                 await sock.sendMessage(from, {
-                    text: `❌ *Gagal Mengirim!*\n\n` +
-                          `Error: ${result.error}\n\n` +
-                          `💡 Pastikan email valid dan coba lagi.`
+                    text: `❌ *Gagal Mengirim!*\n\nError: ${result.error}\n\n💡 Pastikan email valid dan coba lagi.`
                 });
             }
         } catch (err) {
             await sock.sendMessage(from, {
-                text: `❌ *Error:* ${err.message}\n\n` +
-                      'Silakan coba lagi nanti atau hubungi owner.'
+                text: `❌ *Error:* ${err.message}\n\nSilakan coba lagi nanti atau hubungi owner.`
             });
         }
         return;
@@ -943,9 +940,7 @@ async function cmdAlightMotion(sock, from, args, pushName) {
         const rawLink = args.slice(1).join(' ');
 
         await sock.sendMessage(from, { 
-            text: '🔄 *Memverifikasi akun...*\n\n' +
-                  `📧 Email: ${email}\n` +
-                  '⏳ Mohon tunggu sebentar...'
+            text: '🔄 *Memverifikasi akun...*\n\n📧 Email: ${email}\n⏳ Mohon tunggu sebentar...'
         });
 
         try {
@@ -964,37 +959,25 @@ async function cmdAlightMotion(sock, from, args, pushName) {
                             `📱 Silakan login di aplikasi Alight Motion\n` +
                             `menggunakan email ${email}\n\n` +
                             `💡 Simpan oobCode untuk backup.`;
-
-                const message = {
+                
+                const buttons = [
+                    { buttonId: `${prefix}alight help`, buttonText: { displayText: '📖 Bantuan' }, type: 1 },
+                    { buttonId: `${prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+                ];
+                
+                await sock.sendMessage(from, {
                     text: text,
-                    footer: '✨ Generated by RafaelXD',
-                    buttons: [
-                        { buttonId: `${prefix}alight`, buttonText: { displayText: '🔄 Generate Lagi' }, type: 1 },
-                        { buttonId: `${prefix}owner`, buttonText: { displayText: '👤 Bantuan' }, type: 1 }
-                    ],
-                    viewOnce: false
-                };
-
-                try {
-                    await sock.sendMessage(from, message);
-                } catch (e) {
-                    await sock.sendMessage(from, { text });
-                }
+                    buttons: buttons,
+                    headerType: 1
+                });
             } else {
                 await sock.sendMessage(from, {
-                    text: `❌ *Verifikasi Gagal!*\n\n` +
-                          `Error: ${result.error}\n\n` +
-                          `💡 *Tips:*\n` +
-                          `• Pastikan link yang dicopy benar\n` +
-                          `• Link hanya bisa dipakai 1x\n` +
-                          `• Coba kirim ulang magic link\n\n` +
-                          `🔄 Kirim ulang: ${prefix}alight ${email}`
+                    text: `❌ *Verifikasi Gagal!*\n\nError: ${result.error}\n\n💡 *Tips:*\n• Pastikan link yang dicopy benar\n• Link hanya bisa dipakai 1x\n• Coba kirim ulang magic link\n\n🔄 Kirim ulang: ${prefix}alight ${email}`
                 });
             }
         } catch (err) {
             await sock.sendMessage(from, {
-                text: `❌ *Error:* ${err.message}\n\n` +
-                      'Silakan coba lagi nanti atau hubungi owner.'
+                text: `❌ *Error:* ${err.message}\n\nSilakan coba lagi nanti atau hubungi owner.`
             });
         }
         return;
@@ -1003,12 +986,9 @@ async function cmdAlightMotion(sock, from, args, pushName) {
 
 async function cmdSongFess(sock, from, args, pushName, messageInfo) {
     const prefix = global.botConfig.prefix;
-    const channelId = global.botConfig.channelId || '120363xxxxx@newsletter';
     
     if (args.length === 0) {
-        const message = {
-            image: { url: 'https://files.catbox.moe/songfess-banner.jpg' },
-            caption: `╔══════════════════════════╗\n` +
+        const text = `╔══════════════════════════╗\n` +
                      `║    🎵 S O N G F E S S   ║\n` +
                      `╚══════════════════════════╝\n\n` +
                      `📌 *Cara Pakai SongFess:*\n\n` +
@@ -1020,28 +1000,18 @@ async function cmdSongFess(sock, from, args, pushName, messageInfo) {
                      `${prefix}songfess Night Changes | lagu ini bikin nangis 😭\n` +
                      `${prefix}songfess Sempurna\n\n` +
                      `🎵 SongFess akan dikirim ke channel!\n` +
-                     `🕐 Delay: ~5 menit (antrian)`,
-            footer: '🎵 Kirim lagu favoritmu secara anonim',
-            buttons: [
-                { buttonId: `${prefix}songfess help`, buttonText: { displayText: '📖 Cara Pakai' }, type: 1 },
-                { buttonId: `${prefix}songfess stats`, buttonText: { displayText: '📊 Stats' }, type: 1 }
-            ],
-            viewOnce: false
-        };
-
-        try {
-            await sock.sendMessage(from, message);
-        } catch (e) {
-            await sock.sendMessage(from, {
-                text: `╔══════════════════════════╗\n` +
-                      `║    🎵 S O N G F E S S   ║\n` +
-                      `╚══════════════════════════╝\n\n` +
-                      `📌 *Cara Pakai:*\n` +
-                      `${prefix}songfess judul | pesan\n\n` +
-                      `💡 Contoh:\n` +
-                      `${prefix}songfess Night Changes | lagu ini bikin nangis 😭`
-            });
-        }
+                     `🕐 Delay: ~5 menit (antrian)`;
+        
+        const buttons = [
+            { buttonId: `${prefix}songfess stats`, buttonText: { displayText: '📊 Stats' }, type: 1 },
+            { buttonId: `${prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+        ];
+        
+        await sock.sendMessage(from, {
+            text: text,
+            buttons: buttons,
+            headerType: 1
+        });
         return;
     }
 
@@ -1056,6 +1026,7 @@ async function cmdSongFess(sock, from, args, pushName, messageInfo) {
                      `🕐 *Delay Kirim:* ${stats.interval} menit\n\n` +
                      `💡 Kirim songfess sekarang:\n` +
                      `${prefix}songfess judul lagu | pesan`;
+        
         await sock.sendMessage(from, { text });
         return;
     }
@@ -1103,30 +1074,15 @@ async function cmdSongFess(sock, from, args, pushName, messageInfo) {
                         `⏳ SongFess kamu akan dikirim\n` +
                         `ke channel dalam ~5 menit.\n\n` +
                         `💡 *Info:* Identitas kamu dirahasiakan.`;
-
-    const confirmMsg = {
-        text: confirmText,
-        footer: '🎵 SongFess - Anonim',
-        buttons: [
-            { buttonId: `${prefix}songfess stats`, buttonText: { displayText: '📊 Lihat Stats' }, type: 1 }
-        ],
-        viewOnce: false
-    };
-
-    try {
-        await sock.sendMessage(from, confirmMsg);
-    } catch (e) {
-        await sock.sendMessage(from, { text: confirmText });
-    }
+    
+    await sock.sendMessage(from, { text: confirmText });
 }
 
 async function cmdConfess(sock, from, args, pushName, messageInfo) {
     const prefix = global.botConfig.prefix;
     
     if (args.length === 0) {
-        const message = {
-            image: { url: 'https://files.catbox.moe/confess-banner.jpg' },
-            caption: `╔══════════════════════════╗\n` +
+        const text = `╔══════════════════════════╗\n` +
                      `║  💌 M E N F E S S      ║\n` +
                      `║    CONFESS ANONIM       ║\n` +
                      `╚══════════════════════════╝\n\n` +
@@ -1142,28 +1098,18 @@ async function cmdConfess(sock, from, args, pushName, messageInfo) {
                      `⚠️ *Rules:*\n` +
                      `• Dilarang spam\n` +
                      `• Dilarang kirim konten negatif\n` +
-                     `• Maksimal 5x per hari`,
-            footer: '💌 Kirim pesan rahasiamu secara anonim',
-            buttons: [
-                { buttonId: `${prefix}menfess help`, buttonText: { displayText: '📖 Cara Pakai' }, type: 1 },
-                { buttonId: `${prefix}menfess stats`, buttonText: { displayText: '📊 Stats' }, type: 1 }
-            ],
-            viewOnce: false
-        };
-
-        try {
-            await sock.sendMessage(from, message);
-        } catch (e) {
-            await sock.sendMessage(from, {
-                text: `╔══════════════════════════╗\n` +
-                      `║  💌 M E N F E S S      ║\n` +
-                      `╚══════════════════════════╝\n\n` +
-                      `📌 *Cara Pakai:*\n` +
-                      `${prefix}menfess 628xxxx|pesan kamu\n\n` +
-                      `💡 Contoh:\n` +
-                      `${prefix}menfess 628123456789|hai kamu cantik 🥰`
-            });
-        }
+                     `• Maksimal 5x per hari`;
+        
+        const buttons = [
+            { buttonId: `${prefix}menfess stats`, buttonText: { displayText: '📊 Stats' }, type: 1 },
+            { buttonId: `${prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+        ];
+        
+        await sock.sendMessage(from, {
+            text: text,
+            buttons: buttons,
+            headerType: 1
+        });
         return;
     }
 
@@ -1180,6 +1126,7 @@ async function cmdConfess(sock, from, args, pushName, messageInfo) {
                      `⏳ *Status:* ${queue.length > 0 ? 'Processing' : 'Idle'}\n\n` +
                      `💡 Kirim menfess:\n` +
                      `${prefix}menfess 628xxxx|pesan`;
+        
         await sock.sendMessage(from, { text });
         return;
     }
@@ -1192,18 +1139,14 @@ async function cmdConfess(sock, from, args, pushName, messageInfo) {
     
     if (!targetNumber || targetNumber.length < 10) {
         await sock.sendMessage(from, { 
-            text: '❌ *Nomor tujuan tidak valid!*\n\n' +
-                  'Format: 628xxxxxxxxxx\n\n' +
-                  `Contoh: ${prefix}menfess 628123456789|pesan`
+            text: '❌ *Nomor tujuan tidak valid!*\n\nFormat: 628xxxxxxxxxx\n\nContoh: ${prefix}menfess 628123456789|pesan'
         });
         return;
     }
 
     if (!confessMessage) {
         await sock.sendMessage(from, { 
-            text: '❌ *Pesan tidak boleh kosong!*\n\n' +
-                  `Format: ${prefix}menfess nomor|pesan\n\n` +
-                  `Contoh: ${prefix}menfess 628123456789|hai!`
+            text: '❌ *Pesan tidak boleh kosong!*\n\nFormat: ${prefix}menfess nomor|pesan\n\nContoh: ${prefix}menfess 628123456789|hai!'
         });
         return;
     }
@@ -1219,17 +1162,14 @@ async function cmdConfess(sock, from, args, pushName, messageInfo) {
     
     if (senderConfesses.length >= 5) {
         await sock.sendMessage(from, { 
-            text: '❌ *Limit Harian Tercapai!*\n\n' +
-                  'Kamu sudah mengirim 5 menfess hari ini.\n' +
-                  'Silakan coba lagi besok.'
+            text: '❌ *Limit Harian Tercapai!*\n\nKamu sudah mengirim 5 menfess hari ini.\nSilakan coba lagi besok.'
         });
         return;
     }
 
     if (targetNumber === senderNumber || targetNumber === senderNumber.replace(/^62/, '0')) {
         await sock.sendMessage(from, { 
-            text: '😅 *Tidak bisa kirim ke diri sendiri!*\n\n' +
-                  'Menfess hanya untuk mengirim ke orang lain.'
+            text: '😅 *Tidak bisa kirim ke diri sendiri!*\n\nMenfess hanya untuk mengirim ke orang lain.'
         });
         return;
     }
@@ -1262,21 +1202,8 @@ async function cmdConfess(sock, from, args, pushName, messageInfo) {
                         `✅ Menfess kamu akan segera dikirim!\n\n` +
                         `💡 Penerima tidak akan tahu\n` +
                         `siapa pengirimnya 🤫`;
-
-    const confirmMsg = {
-        text: confirmText,
-        footer: '💌 Menfess - Anonim & Rahasia',
-        buttons: [
-            { buttonId: `${prefix}menfess stats`, buttonText: { displayText: '📊 Cek Stats' }, type: 1 }
-        ],
-        viewOnce: false
-    };
-
-    try {
-        await sock.sendMessage(from, confirmMsg);
-    } catch (e) {
-        await sock.sendMessage(from, { text: confirmText });
-    }
+    
+    await sock.sendMessage(from, { text: confirmText });
 
     try {
         const targetText = `╔══════════════════════════╗\n` +
@@ -1284,37 +1211,22 @@ async function cmdConfess(sock, from, args, pushName, messageInfo) {
                           `╚══════════════════════════╝\n\n` +
                           `💌 *Pesan Rahasia Untukmu:*\n\n` +
                           `_"${confessMessage}"_\n\n` +
-                          `─────────────────────────\n` +
+                          `━━━━━━━━━━━━━━━━━━━━━━\n` +
                           `👤 *Dari:* Anonim #${senderNumber.slice(-4)}\n` +
                           `🕐 *Waktu:* ${new Date().toLocaleString('id-ID')}\n\n` +
                           `💡 Seseorang mengirimkan pesan\n` +
                           `ini untukmu secara anonim.\n\n` +
+                          `🔒 Identitas pengirim dirahasiakan.\n\n` +
                           `✨ Mau balas? Kirim menfess juga!\n` +
                           `Ketik: ${prefix}menfess <nomor>|<pesan>`;
 
-        const targetMsg = {
-            text: targetText,
-            footer: '💌 Menfess - Pesan Rahasia',
-            buttons: [
-                { buttonId: `${prefix}menfess`, buttonText: { displayText: '💌 Balas Menfess' }, type: 1 }
-            ],
-            viewOnce: false
-        };
-
-        try {
-            await sock.sendMessage(targetJid, targetMsg);
-        } catch (e) {
-            await sock.sendMessage(targetJid, { text: targetText });
-        }
+        await sock.sendMessage(targetJid, { text: targetText });
 
         removeConfess(confessId, true);
 
         setTimeout(async () => {
             await sock.sendMessage(from, {
-                text: `✅ *Menfess Terkirim!*\n\n` +
-                      `Pesan kamu (#${confessId}) sudah\n` +
-                      `berhasil dikirim ke tujuan.\n\n` +
-                      `🕐 ${new Date().toLocaleTimeString('id-ID')}`
+                text: `✅ *Menfess Terkirim!*\n\nPesan kamu (#${confessId}) sudah\nberhasil dikirim ke tujuan.\n\n🕐 ${new Date().toLocaleTimeString('id-ID')}`
             });
         }, 2000);
 
@@ -1324,13 +1236,7 @@ async function cmdConfess(sock, from, args, pushName, messageInfo) {
         removeConfess(confessId, false);
 
         await sock.sendMessage(from, {
-            text: `❌ *Gagal Mengirim Menfess!*\n\n` +
-                  `Pesan tidak bisa dikirim ke nomor tujuan.\n\n` +
-                  `Kemungkinan:\n` +
-                  `• Nomor tidak terdaftar di WhatsApp\n` +
-                  `• Nomor salah\n` +
-                  `• Pengguna memblokir bot\n\n` +
-                  `💡 Coba cek kembali nomor tujuannya.`
+            text: `❌ *Gagal Mengirim Menfess!*\n\nPesan tidak bisa dikirim ke nomor tujuan.\n\nKemungkinan:\n• Nomor tidak terdaftar di WhatsApp\n• Nomor salah\n• Pengguna memblokir bot\n\n💡 Coba cek kembali nomor tujuannya.`
         });
     }
 }
@@ -1341,9 +1247,7 @@ async function cmdSticker(sock, from, args, pushName, messageInfo) {
     const hasFfmpeg = await checkFfmpeg();
     if (!hasFfmpeg) {
         await sock.sendMessage(from, {
-            text: '❌ *FFmpeg tidak terinstall!*\n\n' +
-                  'Sticker maker membutuhkan FFmpeg.\n' +
-                  'Silakan install FFmpeg terlebih dahulu.'
+            text: '❌ *FFmpeg tidak terinstall!*\n\nSticker maker membutuhkan FFmpeg.\nSilakan install FFmpeg terlebih dahulu.'
         });
         return;
     }
@@ -1387,7 +1291,16 @@ async function cmdSticker(sock, from, args, pushName, messageInfo) {
                      `• Video: Maks 15 detik\n` +
                      `• File: Maks 10 MB`;
         
-        await sock.sendMessage(from, { text });
+        const buttons = [
+            { buttonId: `${prefix}s`, buttonText: { displayText: '🎨 Buat Sticker' }, type: 1 },
+            { buttonId: `${prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+        ];
+        
+        await sock.sendMessage(from, {
+            text: text,
+            buttons: buttons,
+            headerType: 1
+        });
         return;
     }
     
@@ -1418,57 +1331,45 @@ async function cmdSticker(sock, from, args, pushName, messageInfo) {
     }
     
     if (!hasMedia) {
-        const message = {
-            image: { url: 'https://files.catbox.moe/sticker-banner.jpg' },
-            caption: `╔══════════════════════════╗\n` +
+        const text = `╔══════════════════════════╗\n` +
                      `║   🎨 STICKER MAKER     ║\n` +
                      `║   Foto & Video (15s)   ║\n` +
                      `╚══════════════════════════╝\n\n` +
                      `📌 *Cara Membuat Sticker:*\n\n` +
                      `*1️⃣ Kirim/Reply Gambar:*\n` +
-                     `${prefix}s | ${prefix}s circle | ${prefix}s rounded\n\n` +
+                     `${prefix}s\n` +
+                     `${prefix}s circle\n` +
+                     `${prefix}s rounded\n\n` +
                      `*2️⃣ Kirim/Reply Video:*\n` +
-                     `${prefix}s | ${prefix}s circle\n\n` +
+                     `${prefix}s\n` +
+                     `${prefix}s circle\n\n` +
                      `🎨 *Style:* full, circle, rounded\n` +
-                     `📏 Video: Maks 15 detik | File: Maks 10 MB\n\n` +
-                     `💡 Reply gambar → ${prefix}s circle`,
-            footer: '🎨 Sticker Maker v1.0',
-            buttons: [
-                { buttonId: `${prefix}s full`, buttonText: { displayText: '📱 Full Sticker' }, type: 1 },
-                { buttonId: `${prefix}s circle`, buttonText: { displayText: '⭕ Circle' }, type: 1 },
-                { buttonId: `${prefix}s help`, buttonText: { displayText: '📖 Bantuan' }, type: 1 }
-            ],
-            viewOnce: false
-        };
-
-        try {
-            await sock.sendMessage(from, message);
-        } catch (e) {
-            await sock.sendMessage(from, {
-                text: `🎨 *STICKER MAKER*\n\n` +
-                      `📌 Cara pakai:\n` +
-                      `1. Kirim/reply gambar atau video (max 15s)\n` +
-                      `2. Ketik ${prefix}s\n\n` +
-                      `Style: ${prefix}s full | circle | rounded`
-            });
-        }
+                     `📏 Video: Maks 15 detik\n` +
+                     `📦 File: Maks 10 MB\n\n` +
+                     `💡 Reply gambar → ${prefix}s circle`;
+        
+        const buttons = [
+            { buttonId: `${prefix}s help`, buttonText: { displayText: '📖 Bantuan' }, type: 1 },
+            { buttonId: `${prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+        ];
+        
+        await sock.sendMessage(from, {
+            text: text,
+            buttons: buttons,
+            headerType: 1
+        });
         return;
     }
     
     if (mediaType === 'video' && mediaDuration > STICKER_CONFIG.MAX_VIDEO_DURATION) {
         await sock.sendMessage(from, {
-            text: `❌ *Video terlalu panjang!*\n\n` +
-                  `⏱️ Durasi: ${formatDuration(mediaDuration)}\n` +
-                  `📏 Maksimal: ${STICKER_CONFIG.MAX_VIDEO_DURATION} detik`
+            text: `❌ *Video terlalu panjang!*\n\n⏱️ Durasi: ${formatDuration(mediaDuration)}\n📏 Maksimal: ${STICKER_CONFIG.MAX_VIDEO_DURATION} detik`
         });
         return;
     }
     
     await sock.sendMessage(from, { 
-        text: '🔄 *Membuat sticker...*\n\n' +
-              `📸 Tipe: ${mediaType === 'image' ? 'Gambar' : 'Video'}\n` +
-              `🎨 Style: ${stickerType}\n` +
-              '\n⏳ Mohon tunggu sebentar...'
+        text: '🔄 *Membuat sticker...*\n\n📸 Tipe: ${mediaType === 'image' ? 'Gambar' : 'Video'}\n🎨 Style: ${stickerType}\n\n⏳ Mohon tunggu sebentar...'
     });
     
     try {
@@ -1481,9 +1382,7 @@ async function cmdSticker(sock, from, args, pushName, messageInfo) {
         await sock.sendMessage(from, { sticker: result.sticker });
         
         setTimeout(async () => {
-            const info = `✅ *Sticker Berhasil!*\n\n` +
-                        `📸 Tipe: ${result.type === 'animated' ? '🎬 Animasi' : '🖼️ Statis'}\n` +
-                        `🎨 Style: ${stickerType === 'full' ? '📱 Full' : stickerType === 'circle' ? '⭕ Circle' : '🔲 Rounded'}`;
+            const info = `✅ *Sticker Berhasil!*\n\n📸 Tipe: ${result.type === 'animated' ? '🎬 Animasi' : '🖼️ Statis'}\n🎨 Style: ${stickerType === 'full' ? '📱 Full' : stickerType === 'circle' ? '⭕ Circle' : '🔲 Rounded'}`;
             
             await sock.sendMessage(from, { text: info });
         }, 500);
@@ -1491,45 +1390,28 @@ async function cmdSticker(sock, from, args, pushName, messageInfo) {
     } catch (err) {
         console.error('Sticker Error:', err.message);
         await sock.sendMessage(from, {
-            text: `❌ *Gagal membuat sticker!*\n\n` +
-                  `Error: ${err.message}\n\n` +
-                  `💡 Pastikan gambar/video tidak rusak dan ukuran tidak lebih dari 10 MB.`
+            text: `❌ *Gagal membuat sticker!*\n\nError: ${err.message}\n\n💡 Pastikan gambar/video tidak rusak dan ukuran tidak lebih dari 10 MB.`
         });
     }
 }
 
 async function cmdSearch(sock, from, args, prefix) {
     if (args.length === 0) {
-        await sock.sendMessage(from, {
-            text: `🔍 *COMMAND SEARCH*\n\n` +
-                  `Cari command berdasarkan kata kunci.\n\n` +
-                  `📌 *Cara pakai:*\n` +
-                  `${prefix}search <kata kunci>\n\n` +
-                  `💡 *Contoh:*\n` +
-                  `${prefix}search jadwal\n` +
-                  `${prefix}cari piket`
-        });
+        const text = `🔍 *COMMAND SEARCH*\n\nCari command berdasarkan kata kunci.\n\n📌 *Cara pakai:*\n${prefix}search <kata kunci>\n\n💡 *Contoh:*\n${prefix}search jadwal\n${prefix}cari piket`;
+        
+        await sock.sendMessage(from, { text });
         return;
     }
 
     const query = args.join(' ').toLowerCase();
-    const suggestions = suggestCommand(query, 0.1, 10);
+    const suggestions = allCommands.filter(cmd => cmd.includes(query));
     
     if (suggestions.length === 0) {
         await sock.sendMessage(from, {
-            text: `🔍 *Pencarian: "${query}"*\n\n` +
-                  `❌ Tidak ada command yang cocok.\n\n` +
-                  `💡 Coba kata kunci lain atau\n` +
-                  `ketik *${prefix}menu* untuk lihat semua.`
+            text: `🔍 *Pencarian: "${query}"*\n\n❌ Tidak ada command yang cocok.\n\n💡 Coba kata kunci lain atau\nketik *${prefix}menu* untuk lihat semua.`
         });
         return;
     }
-
-    const grouped = {};
-    suggestions.forEach(s => {
-        if (!grouped[s.category]) grouped[s.category] = [];
-        grouped[s.category].push(s);
-    });
 
     let text = `╔══════════════════════════╗\n`;
     text += `║  🔍 SEARCH RESULTS     ║\n`;
@@ -1537,23 +1419,13 @@ async function cmdSearch(sock, from, args, prefix) {
     text += `🔎 *Pencarian:* "${query}"\n`;
     text += `📊 *Ditemukan:* ${suggestions.length} command\n\n`;
 
-    for (const [category, cmds] of Object.entries(grouped)) {
-        text += `📂 *${category}*\n`;
-        text += `─────────────────────────\n`;
-        
-        cmds.forEach(c => {
-            const percent = Math.round(c.similarity * 100);
-            text += `  📝 *${prefix}${c.cmd}*\n`;
-            text += `     📖 ${c.desc}\n`;
-            text += `     🎯 ${percent}% cocok\n`;
-            if (c.alias.length > 0) {
-                text += `     🔀 ${c.alias.slice(0, 3).map(a => prefix + a).join(', ')}\n`;
-            }
-            text += `\n`;
-        });
-    }
+    suggestions.slice(0, 20).forEach((cmd, i) => {
+        text += `${i + 1}. ${prefix}${cmd}\n`;
+    });
 
-    text += `💡 Ketik *${prefix}menu* untuk semua command.`;
+    if (suggestions.length > 20) {
+        text += `\n... dan ${suggestions.length - 20} command lainnya`;
+    }
 
     await sock.sendMessage(from, { text });
 }
@@ -1562,17 +1434,9 @@ async function cmdAddPR(sock, from, args, pushName, messageInfo) {
     const prefix = global.botConfig.prefix;
     
     if (args.length === 0) {
-        await sock.sendMessage(from, {
-            text: `📚 *TAMBAH PR/TUGAS*\n\n` +
-                  `📌 *Format:*\n` +
-                  `${prefix}addpr <mapel>|<deskripsi>|<deadline>\n\n` +
-                  `💡 *Contoh:*\n` +
-                  `${prefix}addpr Matematika|Halaman 100-101|2024-12-20\n` +
-                  `${prefix}addpr IPA|Buat laporan praktikum|2024-12-25\n\n` +
-                  `📎 *Bisa juga reply:*\n` +
-                  `Reply gambar/file/link → ${prefix}addpr mapel|deskripsi|deadline\n\n` +
-                  `📅 Format deadline: YYYY-MM-DD`
-        });
+        const text = `📚 *TAMBAH PR/TUGAS*\n\n📌 *Format:*\n${prefix}addpr <mapel>|<deskripsi>|<deadline>\n\n💡 *Contoh:*\n${prefix}addpr Matematika|Halaman 100-101|2024-12-20\n${prefix}addpr IPA|Buat laporan praktikum|2024-12-25\n\n📎 *Bisa juga reply:*\nReply gambar/file/link → ${prefix}addpr mapel|deskripsi|deadline\n\n📅 Format deadline: YYYY-MM-DD`;
+        
+        await sock.sendMessage(from, { text });
         return;
     }
     
@@ -1587,9 +1451,7 @@ async function cmdAddPR(sock, from, args, pushName, messageInfo) {
         const deadlineRegex = /^\d{4}-\d{2}-\d{2}$/;
         if (!deadlineRegex.test(deadline)) {
             await sock.sendMessage(from, {
-                text: '❌ Format deadline salah!\n\n' +
-                      'Gunakan format: YYYY-MM-DD\n' +
-                      'Contoh: 2024-12-20'
+                text: '❌ Format deadline salah!\n\nGunakan format: YYYY-MM-DD\nContoh: 2024-12-20'
             });
             return;
         }
@@ -1641,8 +1503,15 @@ async function cmdAddPR(sock, from, args, pushName, messageInfo) {
         } catch (e) {}
     }
     
+    const buttons = [
+        { buttonId: `${prefix}pr`, buttonText: { displayText: '📚 Daftar PR' }, type: 1 },
+        { buttonId: `${prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+    ];
+    
     await sock.sendMessage(from, {
-        text: `✅ *PR Berhasil Ditambahkan!*\n\n${prDetail}`
+        text: `✅ *PR Berhasil Ditambahkan!*\n\n${prDetail}`,
+        buttons: buttons,
+        headerType: 1
     });
 }
 
@@ -1651,10 +1520,7 @@ async function cmdDeletePR(sock, from, args, pushName) {
     
     if (args.length === 0) {
         await sock.sendMessage(from, {
-            text: `❌ *HAPUS PR*\n\n` +
-                  `📌 Format: ${prefix}delpr <id>\n\n` +
-                  `💡 Contoh: ${prefix}delpr PR241201ABC\n\n` +
-                  `🔍 Cari ID: ${prefix}pr (lihat daftar PR)`
+            text: `❌ *HAPUS PR*\n\n📌 Format: ${prefix}delpr <id>\n\n💡 Contoh: ${prefix}delpr PR241201ABC\n\n🔍 Cari ID: ${prefix}pr (lihat daftar PR)`
         });
         return;
     }
@@ -1664,17 +1530,14 @@ async function cmdDeletePR(sock, from, args, pushName) {
     
     if (!pr) {
         await sock.sendMessage(from, {
-            text: `❌ PR dengan ID *${id}* tidak ditemukan.\n\n` +
-                  `🔍 Cek daftar PR: ${prefix}pr`
+            text: `❌ PR dengan ID *${id}* tidak ditemukan.\n\n🔍 Cek daftar PR: ${prefix}pr`
         });
         return;
     }
     
     if (deletePR(id)) {
         await sock.sendMessage(from, {
-            text: `✅ PR berhasil dihapus!\n\n` +
-                  `📌 ${pr.subject}\n` +
-                  `🆔 ${pr.id}`
+            text: `✅ PR berhasil dihapus!\n\n📌 ${pr.subject}\n🆔 ${pr.id}`
         });
     } else {
         await sock.sendMessage(from, { text: '❌ Gagal menghapus PR.' });
@@ -1694,25 +1557,16 @@ async function cmdListPR(sock, from, args) {
     const prs = getPRs(filter);
     const result = formatPRList(prs, page);
     
-    if (result.totalPages > 1) {
-        const msg = {
-            text: result.text,
-            footer: `📚 PR Tracker | Halaman ${page}/${result.totalPages}`,
-            buttons: [
-                { buttonId: `${global.botConfig.prefix}pr ${filter} ${page - 1}`, buttonText: { displayText: '⬅️ Sebelumnya' }, type: 1 },
-                { buttonId: `${global.botConfig.prefix}pr ${filter} ${page + 1}`, buttonText: { displayText: '➡️ Selanjutnya' }, type: 1 }
-            ],
-            viewOnce: false
-        };
-        
-        try {
-            await sock.sendMessage(from, msg);
-        } catch (e) {
-            await sock.sendMessage(from, { text: result.text });
-        }
-    } else {
-        await sock.sendMessage(from, { text: result.text });
-    }
+    const buttons = [
+        { buttonId: `${global.botConfig.prefix}addpr`, buttonText: { displayText: '📝 Tambah PR' }, type: 1 },
+        { buttonId: `${global.botConfig.prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
+        text: result.text,
+        buttons: buttons,
+        headerType: 1
+    });
 }
 
 async function cmdAddPartner(sock, from, args, pushName) {
@@ -1720,11 +1574,7 @@ async function cmdAddPartner(sock, from, args, pushName) {
     
     if (args.length === 0) {
         await sock.sendMessage(from, {
-            text: `⭐ *TAMBAH PARTNER*\n\n` +
-                  `📌 Format: ${prefix}addpartner <nomor>|<nama>\n\n` +
-                  `💡 Contoh:\n` +
-                  `${prefix}addpartner 628123456789|Budi\n` +
-                  `${prefix}addpartner 08123456789|Ani`
+            text: `⭐ *TAMBAH PARTNER*\n\n📌 Format: ${prefix}addpartner <nomor>|<nama>\n\n💡 Contoh:\n${prefix}addpartner 628123456789|Budi\n${prefix}addpartner 08123456789|Ani`
         });
         return;
     }
@@ -1743,10 +1593,7 @@ async function cmdAddPartner(sock, from, args, pushName) {
     
     if (result.success) {
         await sock.sendMessage(from, {
-            text: `✅ *Partner Berhasil Ditambahkan!*\n\n` +
-                  `👤 Nama: ${result.partner.name}\n` +
-                  `📱 Nomor: ${result.partner.number}\n` +
-                  `🕐 Ditambah: ${new Date().toLocaleString('id-ID')}`
+            text: `✅ *Partner Berhasil Ditambahkan!*\n\n👤 Nama: ${result.partner.name}\n📱 Nomor: ${result.partner.number}\n🕐 Ditambah: ${new Date().toLocaleString('id-ID')}`
         });
     } else {
         await sock.sendMessage(from, { text: `❌ ${result.error}` });
@@ -1758,9 +1605,7 @@ async function cmdRemovePartner(sock, from, args, pushName) {
     
     if (args.length === 0) {
         await sock.sendMessage(from, {
-            text: `❌ *HAPUS PARTNER*\n\n` +
-                  `📌 Format: ${prefix}delpartner <nomor>\n\n` +
-                  `💡 Contoh: ${prefix}delpartner 628123456789`
+            text: `❌ *HAPUS PARTNER*\n\n📌 Format: ${prefix}delpartner <nomor>\n\n💡 Contoh: ${prefix}delpartner 628123456789`
         });
         return;
     }
@@ -1770,9 +1615,7 @@ async function cmdRemovePartner(sock, from, args, pushName) {
     
     if (result.success) {
         await sock.sendMessage(from, {
-            text: `✅ Partner berhasil dihapus!\n\n` +
-                  `👤 ${result.partner.name}\n` +
-                  `📱 ${result.partner.number}`
+            text: `✅ Partner berhasil dihapus!\n\n👤 ${result.partner.name}\n📱 ${result.partner.number}`
         });
     } else {
         await sock.sendMessage(from, { text: `❌ ${result.error}` });
@@ -1800,7 +1643,16 @@ async function cmdListPartners(sock, from) {
     text += `━━━━━━━━━━━━━━━━━━━━━━\n`;
     text += `Total: ${partners.length} partner`;
     
-    await sock.sendMessage(from, { text });
+    const buttons = [
+        { buttonId: `${global.botConfig.prefix}addpartner`, buttonText: { displayText: '⭐ Tambah' }, type: 1 },
+        { buttonId: `${global.botConfig.prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1
+    });
 }
 
 async function cmdAddChannel(sock, from, args, pushName) {
@@ -1808,13 +1660,7 @@ async function cmdAddChannel(sock, from, args, pushName) {
     
     if (args.length === 0) {
         await sock.sendMessage(from, {
-            text: `📢 *TAMBAH CHANNEL*\n\n` +
-                  `📌 Format: ${prefix}addch <channel_id>|<nama>\n\n` +
-                  `💡 Cara dapat ID:\n` +
-                  `1. Masuk ke channel\n` +
-                  `2. Ketik ${prefix}getid\n` +
-                  `3. Copy Channel ID\n\n` +
-                  `Contoh: ${prefix}addch 120363xxxxx@newsletter|Channel Kelas`
+            text: `📢 *TAMBAH CHANNEL*\n\n📌 Format: ${prefix}addch <channel_id>|<nama>\n\n💡 Cara dapat ID:\n1. Masuk ke channel\n2. Ketik ${prefix}getid\n3. Copy Channel ID\n\nContoh: ${prefix}addch 120363xxxxx@newsletter|Channel Kelas`
         });
         return;
     }
@@ -1828,13 +1674,7 @@ async function cmdAddChannel(sock, from, args, pushName) {
     
     if (result.success) {
         await sock.sendMessage(from, {
-            text: `✅ *Channel Berhasil Ditambahkan!*\n\n` +
-                  `📢 ${result.channel.name}\n` +
-                  `🆔 ${result.channel.id}\n\n` +
-                  `📌 Channel ini akan menerima:\n` +
-                  `• Reminder otomatis\n` +
-                  `• PR/Tugas baru\n` +
-                  `• Pengumuman`
+            text: `✅ *Channel Berhasil Ditambahkan!*\n\n📢 ${result.channel.name}\n🆔 ${result.channel.id}\n\n📌 Channel ini akan menerima:\n• Reminder otomatis\n• PR/Tugas baru\n• Pengumuman`
         });
     } else {
         await sock.sendMessage(from, { text: `❌ ${result.error}` });
@@ -1875,7 +1715,16 @@ async function cmdListChannels(sock, from) {
         text += `   🆔 \`${ch.id}\`\n\n`;
     });
     
-    await sock.sendMessage(from, { text });
+    const buttons = [
+        { buttonId: `${global.botConfig.prefix}addch`, buttonText: { displayText: '📢 Tambah' }, type: 1 },
+        { buttonId: `${global.botConfig.prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1
+    });
 }
 
 async function cmdAddGroupCmd(sock, from, args, pushName) {
@@ -1883,13 +1732,7 @@ async function cmdAddGroupCmd(sock, from, args, pushName) {
     
     if (args.length === 0) {
         await sock.sendMessage(from, {
-            text: `👥 *TAMBAH GROUP*\n\n` +
-                  `📌 Format: ${prefix}addgroup <group_id>|<nama>\n\n` +
-                  `💡 Cara dapat ID:\n` +
-                  `1. Masuk ke group\n` +
-                  `2. Ketik ${prefix}getid\n` +
-                  `3. Copy Group ID\n\n` +
-                  `Contoh: ${prefix}addgroup 120363xxxxx@g.us|Grup Kelas`
+            text: `👥 *TAMBAH GROUP*\n\n📌 Format: ${prefix}addgroup <group_id>|<nama>\n\n💡 Cara dapat ID:\n1. Masuk ke group\n2. Ketik ${prefix}getid\n3. Copy Group ID\n\nContoh: ${prefix}addgroup 120363xxxxx@g.us|Grup Kelas`
         });
         return;
     }
@@ -1903,9 +1746,7 @@ async function cmdAddGroupCmd(sock, from, args, pushName) {
     
     if (result.success) {
         await sock.sendMessage(from, {
-            text: `✅ *Group Berhasil Ditambahkan!*\n\n` +
-                  `👥 ${result.group.name}\n` +
-                  `🆔 ${result.group.id}`
+            text: `✅ *Group Berhasil Ditambahkan!*\n\n👥 ${result.group.name}\n🆔 ${result.group.id}`
         });
     } else {
         await sock.sendMessage(from, { text: `❌ ${result.error}` });
@@ -1946,7 +1787,16 @@ async function cmdListGroups(sock, from) {
         text += `   🆔 \`${gr.id}\`\n\n`;
     });
     
-    await sock.sendMessage(from, { text });
+    const buttons = [
+        { buttonId: `${global.botConfig.prefix}addgroup`, buttonText: { displayText: '👥 Tambah' }, type: 1 },
+        { buttonId: `${global.botConfig.prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1
+    });
 }
 
 async function cmdBroadcast(sock, from, args, pushName, messageInfo) {
@@ -1954,10 +1804,7 @@ async function cmdBroadcast(sock, from, args, pushName, messageInfo) {
     
     if (args.length === 0) {
         await sock.sendMessage(from, {
-            text: `📢 *BROADCAST*\n\n` +
-                  `📌 Format: ${prefix}bc <pesan>\n\n` +
-                  `💡 Bisa reply gambar/video untuk broadcast media.\n\n` +
-                  `Pesan akan dikirim ke semua channel & group terdaftar.`
+            text: `📢 *BROADCAST*\n\n📌 Format: ${prefix}bc <pesan>\n\n💡 Bisa reply gambar/video untuk broadcast media.\n\nPesan akan dikirim ke semua channel & group terdaftar.`
         });
         return;
     }
@@ -1990,10 +1837,7 @@ async function cmdBroadcast(sock, from, args, pushName, messageInfo) {
     }
     
     await sock.sendMessage(from, {
-        text: `✅ *Broadcast Selesai!*\n\n` +
-              `📊 Terkirim: ${sentCount}\n` +
-              `❌ Gagal: ${failCount}\n` +
-              `📢 Total target: ${targets.channels.length + targets.groups.length}`
+        text: `✅ *Broadcast Selesai!*\n\n📊 Terkirim: ${sentCount}\n❌ Gagal: ${failCount}\n📢 Total target: ${targets.channels.length + targets.groups.length}`
     });
 }
 
@@ -2195,7 +2039,16 @@ async function cmdPing(sock, from) {
                  `🤖 ${global.botConfig.name} v${global.botConfig.version}\n` +
                  `   by ${global.botConfig.owner}`;
     
-    await sock.sendMessage(from, { text });
+    const buttons = [
+        { buttonId: `${global.botConfig.prefix}info`, buttonText: { displayText: '📋 Menu' }, type: 1 },
+        { buttonId: `${global.botConfig.prefix}tqto`, buttonText: { displayText: '🙏 Credits' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1
+    });
 }
 
 async function cmdMyLevel(sock, from, pushName, senderNumber) {
@@ -2220,6 +2073,7 @@ async function cmdMyLevel(sock, from, pushName, senderNumber) {
         '🎵 SongFess': [],
         '💌 Menfess': [],
         '🎨 Sticker': [],
+        '🎵 Converter': [],
         '📚 PR/Tugas': [],
         '⭐ Partner': [],
         '📢 Channel': [],
@@ -2241,6 +2095,8 @@ async function cmdMyLevel(sock, from, pushName, senderNumber) {
             categories['💌 Menfess'].push(perm);
         } else if (['sticker', 'stiker', 's'].includes(perm)) {
             categories['🎨 Sticker'].push(perm);
+        } else if (['toaudio', 'toptt', 'convert'].includes(perm)) {
+            categories['🎵 Converter'].push(perm);
         } else if (['addpr', 'delpr', 'pr'].includes(perm)) {
             categories['📚 PR/Tugas'].push(perm);
         } else if (['addpartner', 'delpartner', 'listpartner'].includes(perm)) {
@@ -2258,5 +2114,358 @@ async function cmdMyLevel(sock, from, pushName, senderNumber) {
         }
     }
     
-    await sock.sendMessage(from, { text });
+    const buttons = [
+        { buttonId: `${global.botConfig.prefix}info`, buttonText: { displayText: '📋 Menu' }, type: 1 },
+        { buttonId: `${global.botConfig.prefix}partner`, buttonText: { displayText: '⭐ Partner' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1
+    });
+}
+
+async function cmdTqto(sock, from) {
+    const text = `╔══════════════════════════╗\n` +
+                 `║    🙏 SPECIAL THANKS    ║\n` +
+                 `╚══════════════════════════╝\n\n` +
+                 `Terima kasih kepada semua pihak yang telah mendukung dan menjadi bagian dari perjalanan proyek ini.\n\n` +
+                 `👑 *ndii (Owner FestiveShopID & Dev NeoGoforward)*\n` +
+                 `Terima kasih atas kepercayaan, dukungan, arahan, serta dedikasi yang telah diberikan. Tanpa semua usaha dan komitmen tersebut, proyek ini tidak akan sampai di titik ini.\n\n` +
+                 `⭐ *Partner FestiveShopID*\n` +
+                 `Terima kasih atas kerja sama, bantuan, dan kontribusi yang telah diberikan. Setiap dukungan yang kalian berikan menjadi bagian penting dalam perkembangan proyek ini.\n\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━\n` +
+                 `💻 *Thank You*\n` +
+                 `Every line of code tells a story, and every contribution leaves a legacy.`;
+    
+    const buttons = [
+        { buttonId: `${global.botConfig.prefix}owner`, buttonText: { displayText: '👑 Owner' }, type: 1 },
+        { buttonId: `${global.botConfig.prefix}listpartner`, buttonText: { displayText: '⭐ Partner' }, type: 1 },
+        { buttonId: `${global.botConfig.prefix}info`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1
+    });
+}
+
+// ============ CONVERTER FUNCTIONS ============
+
+async function cmdToAudio(sock, from, args, messageInfo) {
+    const prefix = global.botConfig.prefix;
+    
+    if (args.includes('help') || args.includes('?')) {
+        const text = `🎵 *CONVERT TO AUDIO*\n\n` +
+                     `📌 Mengconvert video/audio ke format audio (MP3)\n\n` +
+                     `*Cara Pakai:*\n` +
+                     `1️⃣ Kirim video/audio ke chat\n` +
+                     `2️⃣ Reply video/audio itu\n` +
+                     `3️⃣ Ketik ${prefix}toaudio\n\n` +
+                     `💡 Contoh: ${prefix}toaudio\n` +
+                     `         ${prefix}mp3\n\n` +
+                     `📱 Hasilnya akan dikirim sebagai file audio MP3`;
+        
+        const buttons = [
+            { buttonId: `${prefix}toptt`, buttonText: { displayText: '🎤 Voice Note' }, type: 1 },
+            { buttonId: `${prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+        ];
+        
+        await sock.sendMessage(from, {
+            text: text,
+            buttons: buttons,
+            headerType: 1
+        });
+        return;
+    }
+    
+    const msg = messageInfo.message;
+    let mediaBuffer = null;
+    let mediaExt = 'mp4';
+    
+    // Cek apakah ada media di message
+    if (msg?.videoMessage) {
+        const stream = await sock.downloadMediaMessage(msg);
+        mediaBuffer = stream;
+        mediaExt = 'mp4';
+    } else if (msg?.audioMessage) {
+        const stream = await sock.downloadMediaMessage(msg);
+        mediaBuffer = stream;
+        mediaExt = 'mp3';
+    } else if (msg?.extendedTextMessage?.contextInfo?.quotedMessage) {
+        const quoted = msg.extendedTextMessage.contextInfo.quotedMessage;
+        if (quoted?.videoMessage) {
+            const stream = await sock.downloadMediaMessage({ 
+                ...messageInfo, 
+                message: quoted 
+            });
+            mediaBuffer = stream;
+            mediaExt = 'mp4';
+        } else if (quoted?.audioMessage) {
+            const stream = await sock.downloadMediaMessage({ 
+                ...messageInfo, 
+                message: quoted 
+            });
+            mediaBuffer = stream;
+            mediaExt = 'mp3';
+        }
+    }
+    
+    if (!mediaBuffer) {
+        await sock.sendMessage(from, {
+            text: `❌ *Tidak ada media ditemukan!*\n\n` +
+                  `📌 Kirim atau reply video/audio dengan command:\n` +
+                  `${prefix}toaudio\n\n` +
+                  `💡 Ketik ${prefix}toaudio help untuk bantuan.`
+        });
+        return;
+    }
+    
+    await sock.sendMessage(from, { 
+        text: '🔄 *Mengconvert ke audio...*\n\n⏳ Mohon tunggu sebentar...' 
+    });
+    
+    try {
+        const result = await toAudio(mediaBuffer, mediaExt);
+        
+        await sock.sendMessage(from, {
+            audio: result.data,
+            mimetype: 'audio/mpeg',
+            fileName: `audio_${Date.now()}.mp3`
+        });
+        
+        setTimeout(async () => {
+            await sock.sendMessage(from, { 
+                text: '✅ *Audio berhasil di-convert!*\n\n🎵 Audio sudah siap diputar.' 
+            });
+        }, 500);
+        
+    } catch (err) {
+        console.error('Convert Error:', err);
+        await sock.sendMessage(from, {
+            text: `❌ *Gagal mengconvert audio!*\n\nError: ${err.message}`
+        });
+    }
+}
+
+async function cmdToPTT(sock, from, args, messageInfo) {
+    const prefix = global.botConfig.prefix;
+    
+    if (args.includes('help') || args.includes('?')) {
+        const text = `🎤 *CONVERT TO VOICE NOTE*\n\n` +
+                     `📌 Mengconvert audio/video ke voice note (PTT)\n\n` +
+                     `*Cara Pakai:*\n` +
+                     `1️⃣ Kirim audio/video ke chat\n` +
+                     `2️⃣ Reply audio/video itu\n` +
+                     `3️⃣ Ketik ${prefix}toptt\n\n` +
+                     `💡 Contoh: ${prefix}toptt\n` +
+                     `         ${prefix}ptt\n\n` +
+                     `📱 Hasilnya akan dikirim sebagai voice note`;
+        
+        const buttons = [
+            { buttonId: `${prefix}toaudio`, buttonText: { displayText: '🎵 Audio' }, type: 1 },
+            { buttonId: `${prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+        ];
+        
+        await sock.sendMessage(from, {
+            text: text,
+            buttons: buttons,
+            headerType: 1
+        });
+        return;
+    }
+    
+    const msg = messageInfo.message;
+    let mediaBuffer = null;
+    let mediaExt = 'mp4';
+    
+    if (msg?.videoMessage) {
+        const stream = await sock.downloadMediaMessage(msg);
+        mediaBuffer = stream;
+        mediaExt = 'mp4';
+    } else if (msg?.audioMessage) {
+        const stream = await sock.downloadMediaMessage(msg);
+        mediaBuffer = stream;
+        mediaExt = 'mp3';
+    } else if (msg?.extendedTextMessage?.contextInfo?.quotedMessage) {
+        const quoted = msg.extendedTextMessage.contextInfo.quotedMessage;
+        if (quoted?.videoMessage) {
+            const stream = await sock.downloadMediaMessage({ 
+                ...messageInfo, 
+                message: quoted 
+            });
+            mediaBuffer = stream;
+            mediaExt = 'mp4';
+        } else if (quoted?.audioMessage) {
+            const stream = await sock.downloadMediaMessage({ 
+                ...messageInfo, 
+                message: quoted 
+            });
+            mediaBuffer = stream;
+            mediaExt = 'mp3';
+        }
+    }
+    
+    if (!mediaBuffer) {
+        await sock.sendMessage(from, {
+            text: `❌ *Tidak ada media ditemukan!*\n\n` +
+                  `📌 Kirim atau reply video/audio dengan command:\n` +
+                  `${prefix}toptt\n\n` +
+                  `💡 Ketik ${prefix}toptt help untuk bantuan.`
+        });
+        return;
+    }
+    
+    await sock.sendMessage(from, { 
+        text: '🔄 *Mengconvert ke voice note...*\n\n⏳ Mohon tunggu sebentar...' 
+    });
+    
+    try {
+        const result = await toPTT(mediaBuffer, mediaExt);
+        
+        await sock.sendMessage(from, {
+            audio: result.data,
+            mimetype: 'audio/ogg; codecs=opus',
+            ptt: true
+        });
+        
+        setTimeout(async () => {
+            await sock.sendMessage(from, { 
+                text: '✅ *Voice note berhasil dibuat!*\n\n🎤 Voice note sudah siap diputar.' 
+            });
+        }, 500);
+        
+    } catch (err) {
+        console.error('Convert Error:', err);
+        await sock.sendMessage(from, {
+            text: `❌ *Gagal membuat voice note!*\n\nError: ${err.message}`
+        });
+    }
+}
+
+async function cmdConvert(sock, from, args, messageInfo) {
+    const prefix = global.botConfig.prefix;
+    
+    if (args.includes('help') || args.includes('?')) {
+        const text = `🔄 *MEDIA CONVERTER*\n\n` +
+                     `📌 Mengconvert berbagai format media\n\n` +
+                     `*Format:*\n` +
+                     `${prefix}convert <video|audio>\n\n` +
+                     `💡 *Contoh:*\n` +
+                     `${prefix}convert video - Convert ke video\n` +
+                     `${prefix}convert audio - Convert ke audio\n\n` +
+                     `ATAU gunakan command spesifik:\n` +
+                     `${prefix}toaudio - Ke audio MP3\n` +
+                     `${prefix}toptt - Ke voice note`;
+        
+        const buttons = [
+            { buttonId: `${prefix}toaudio`, buttonText: { displayText: '🎵 Audio' }, type: 1 },
+            { buttonId: `${prefix}toptt`, buttonText: { displayText: '🎤 Voice' }, type: 1 },
+            { buttonId: `${prefix}menu`, buttonText: { displayText: '📋 Menu' }, type: 1 }
+        ];
+        
+        await sock.sendMessage(from, {
+            text: text,
+            buttons: buttons,
+            headerType: 1
+        });
+        return;
+    }
+    
+    // Jika ada args, cek tipe convert
+    if (args.length > 0) {
+        const type = args[0].toLowerCase();
+        if (type === 'audio' || type === 'mp3') {
+            await cmdToAudio(sock, from, [], messageInfo);
+        } else if (type === 'video' || type === 'mp4') {
+            await cmdToVideo(sock, from, [], messageInfo);
+        } else {
+            await sock.sendMessage(from, {
+                text: `❌ *Tipe tidak dikenal!*\n\n` +
+                      `📌 Gunakan: ${prefix}convert audio atau video\n` +
+                      `💡 ${prefix}convert help untuk bantuan.`
+            });
+        }
+        return;
+    }
+    
+    // Auto detect berdasarkan media yang dikirim
+    const msg = messageInfo.message;
+    let hasVideo = false;
+    let hasAudio = false;
+    
+    if (msg?.videoMessage) hasVideo = true;
+    if (msg?.audioMessage) hasAudio = true;
+    
+    if (msg?.extendedTextMessage?.contextInfo?.quotedMessage) {
+        const quoted = msg.extendedTextMessage.contextInfo.quotedMessage;
+        if (quoted?.videoMessage) hasVideo = true;
+        if (quoted?.audioMessage) hasAudio = true;
+    }
+    
+    if (hasVideo) {
+        await cmdToAudio(sock, from, [], messageInfo);
+    } else if (hasAudio) {
+        await cmdToAudio(sock, from, [], messageInfo);
+    } else {
+        await sock.sendMessage(from, {
+            text: `❌ *Tidak ada media ditemukan!*\n\n` +
+                  `📌 Kirim atau reply media dengan command:\n` +
+                  `${prefix}convert audio atau video\n\n` +
+                  `💡 ${prefix}convert help untuk bantuan.`
+        });
+    }
+}
+
+async function cmdToVideo(sock, from, args, messageInfo) {
+    const msg = messageInfo.message;
+    let mediaBuffer = null;
+    let mediaExt = 'mp4';
+    
+    if (msg?.videoMessage) {
+        const stream = await sock.downloadMediaMessage(msg);
+        mediaBuffer = stream;
+        mediaExt = 'mp4';
+    } else if (msg?.extendedTextMessage?.contextInfo?.quotedMessage) {
+        const quoted = msg.extendedTextMessage.contextInfo.quotedMessage;
+        if (quoted?.videoMessage) {
+            const stream = await sock.downloadMediaMessage({ 
+                ...messageInfo, 
+                message: quoted 
+            });
+            mediaBuffer = stream;
+            mediaExt = 'mp4';
+        }
+    }
+    
+    if (!mediaBuffer) {
+        await sock.sendMessage(from, {
+            text: `❌ *Tidak ada video ditemukan!*\n\n` +
+                  `📌 Kirim atau reply video dengan command:\n` +
+                  `${global.botConfig.prefix}convert video`
+        });
+        return;
+    }
+    
+    await sock.sendMessage(from, { 
+        text: '🔄 *Memproses video...*\n\n⏳ Mohon tunggu sebentar...' 
+    });
+    
+    try {
+        const result = await toVideo(mediaBuffer, mediaExt);
+        
+        await sock.sendMessage(from, {
+            video: result.data,
+            mimetype: 'video/mp4',
+            caption: '✅ *Video berhasil diproses!*'
+        });
+        
+    } catch (err) {
+        console.error('Video Convert Error:', err);
+        await sock.sendMessage(from, {
+            text: `❌ *Gagal memproses video!*\n\nError: ${err.message}`
+        });
+    }
 }
