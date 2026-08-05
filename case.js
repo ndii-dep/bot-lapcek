@@ -55,7 +55,7 @@ const createQuoted = {
         message: {
             newsletterAdminInviteMessage: {
                 newsletterJid: '120363416897292688@newsletter',
-                newsletterName: 'Owner NeoGoforward',
+                newsletterName: 'FestiveShopID',
                 caption: text || '👑 Official Owner Bot'
             }
         }
@@ -114,7 +114,7 @@ const createQuoted = {
         message: {
             newsletterAdminInviteMessage: {
                 newsletterJid: channelId || '120363416897292688@newsletter',
-                newsletterName: channelName || 'Channel WhatsApp',
+                newsletterName: channelName || 'FestiveShopID',
                 caption: text || '📢 Official Channel'
             }
         }
@@ -127,35 +127,13 @@ const createQuoted = {
         },
         message: {
             newsletterAdminInviteMessage: {
-                newsletterJid: jid || '0@newsletter',
-                newsletterName: name || 'Unknown',
+                newsletterJid: jid || '120363416897292688@newsletter',
+                newsletterName: name || 'FestiveShopID',
                 caption: text || ''
             }
         }
     })
 };
-
-function getQuoted(type, text) {
-    const types = {
-        shop: createQuoted.shop,
-        owner: createQuoted.owner,
-        bot: createQuoted.bot,
-        time: createQuoted.time,
-        channel: createQuoted.channel,
-        custom: createQuoted.custom
-    };
-
-    const func = types[type];
-    if (!func) return null;
-
-    if (type === 'channel') {
-        return func(text?.channelId, text?.channelName, text?.caption);
-    } else if (type === 'custom') {
-        return func(text?.jid, text?.name, text?.caption);
-    } else {
-        return func(text);
-    }
-}
 
 module.exports = async function(sock, messageInfo) {
     const { from, pushName, isGroup, isChannel, message, key } = messageInfo;
@@ -248,7 +226,8 @@ module.exports = async function(sock, messageInfo) {
     // Handle bot commands dengan prefix .
     if (!hasPermission(senderNumber, cmd, pushName)) {
         await sock.sendMessage(from, {
-            text: `🔒 *Akses Ditolak!*\n\nCommand *${prefix}${cmd}* membutuhkan level yang lebih tinggi.\n\n👤 Level kamu: ${levelName}\n🔑 Dibutuhkan: Partner atau Owner\n\n💡 Hubungi owner untuk jadi partner.`
+            text: `🔒 *Akses Ditolak!*\n\nCommand *${prefix}${cmd}* membutuhkan level yang lebih tinggi.\n\n👤 Level kamu: ${levelName}\n🔑 Dibutuhkan: Partner atau Owner\n\n💡 Hubungi owner untuk jadi partner.`,
+            quoted: createQuoted.shop('🔒 Akses Ditolak')
         });
         return;
     }
