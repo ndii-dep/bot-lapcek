@@ -12,9 +12,6 @@ const readline = require('readline');
 const fs = require('fs');
 const path = require('path');
 
-// ============================================
-// BOT CONFIGURATION - UBAH SESUAI KEBUTUHAN
-// ============================================
 global.botConfig = {
     name: 'NeoGoforward',
     version: '1.1.1',
@@ -23,30 +20,21 @@ global.botConfig = {
     noBot: '087717274346',
     prefix: '.',
     sessionName: 'session',
-    // GANTI dengan ID channel dan grup Anda!
-    // Cara dapat ID: kirim command .getid di channel/grup tersebut
-    channelId: '120363416897292688@newsletter', // ID Channel WhatsApp
-    groupId: '@g.us', // ID Grup WhatsApp
+    channelId: '120363416897292688@newsletter',
+    groupId: '@g.us',
 };
 
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
-
-// Format nomor telepon (08xxx -> 628xxx)
 function formatPhoneNumber(number) {
     let cleaned = number.replace(/\D/g, '');
     if (cleaned.startsWith('0')) {
         cleaned = '62' + cleaned.substring(1);
     } else if (cleaned.startsWith('62')) {
-        // sudah benar
     } else if (cleaned.length >= 8) {
         cleaned = '62' + cleaned;
     }
     return cleaned;
 }
 
-// Input dari terminal
 function askQuestion(query) {
     const rl = readline.createInterface({
         input: process.stdin,
@@ -58,13 +46,16 @@ function askQuestion(query) {
     }));
 }
 
-// Buat folder yang diperlukan
 function createRequiredFolders() {
     const folders = [
         'db',
         'db/info',
         'db/info/reminder',
         'lib',
+        'data',
+        'temp',
+        'temp/sticker',
+        'alight-output',
     ];
     
     folders.forEach(folder => {
@@ -75,14 +66,10 @@ function createRequiredFolders() {
     });
 }
 
-// ============================================
-// IMPORT MODULES
-// ============================================
 let caseHandler = null;
 let reminderSystem = null;
 
 function loadModules() {
-    // Load case handler
     try {
         caseHandler = require('./case');
         console.log('✅ Case handler loaded');
@@ -92,20 +79,15 @@ function loadModules() {
         process.exit(1);
     }
     
-    // Load reminder system
     try {
         reminderSystem = require('./lib/reminder');
         console.log('✅ Reminder system loaded');
     } catch (err) {
         console.error('❌ Failed to load reminder system:', err.message);
         console.log('⚠️  Please make sure lib/reminder.js exists');
-        process.exit(1);
     }
 }
 
-// ============================================
-// WHATSAPP CONNECTION
-// ============================================
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState(global.botConfig.sessionName);
     const { version, isLatest } = await fetchLatestBaileysVersion();
@@ -121,21 +103,10 @@ async function connectToWhatsApp() {
             keys: makeCacheableSignalKeyStore(state.keys, Pino({ level: 'fatal' })),
         },
         browser: ['Ubuntu', 'Chrome', '20.0.04'],
-    version: version,
-    syncFullHistory: true,
-    generateHighQualityLinkPreview: true,
-    getMessage: async (key) => {
-      if (store) {
-        const msg = await store.loadMessage(key.remoteJid, key.id)
-        return msg?.message || undefined
-      }
-      return proto.Message.fromObject({})
-    }
-  })
+        syncFullHistory: false,
+        generateHighQualityLinkPreview: true,
+    });
     
-    // ============================================
-    // EVENT: Connection Update
-    // ============================================
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
         
@@ -153,9 +124,13 @@ async function connectToWhatsApp() {
             console.log(`💬 Prefix   : ${global.botConfig.prefix}`);
             console.log('═══════════════════════════════════════');
             
-            // Start reminder system
             if (reminderSystem) {
-                reminderSystem.init(sock);
+                try {
+                    reminderSystem.init(sock);
+                    console.log('✅ Reminder system started');
+                } catch (e) {
+                    console.log('⚠️  Reminder system init failed:', e.message);
+                }
             }
             
         } else if (connection === 'close') {
@@ -174,19 +149,15 @@ async function connectToWhatsApp() {
                 connectToWhatsApp();
             } else {
                 console.log('🔒 Logged out. Hapus folder session dan jalankan ulang bot.');
-                if (reminderSystem) reminderSystem.stop();
+                if (reminderSystem) {
+                    try { reminderSystem.stop(); } catch (e) {}
+                }
             }
         }
     });
     
-    // ============================================
-    // EVENT: Credentials Update
-    // ============================================
     sock.ev.on('creds.update', saveCreds);
     
-    // ============================================
-    // PAIRING CODE
-    // ============================================
     if (!sock.authState.creds.registered) {
         console.log('\n📱 BOT BELUM TERDAFTAR');
         console.log('═══════════════════════════════════════');
@@ -219,13 +190,9 @@ async function connectToWhatsApp() {
         }
     }
     
-    // ============================================
-    // EVENT: Messages
-    // ============================================
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         
-        // Skip pesan dari bot sendiri
         if (msg.key.fromMe) return;
         if (m.type !== 'notify') return;
         
@@ -242,12 +209,12 @@ async function connectToWhatsApp() {
                 participant: msg.key.participant,
             };
             
-            // Log pesan masuk
             const chatType = messageInfo.isChannel ? 'Channel' : 
                            messageInfo.isGroup ? 'Group' : 'Private';
-            console.log(`📩 [${chatType}] ${messageInfo.pushName}: ${getTextPreview(msg.message)}`);
             
-            // Process message with case handler
+            const preview = getTextPreview(msg.message);
+            console.log(`📩 [${chatType}] ${messageInfo.pushName}: ${preview}`);
+            
             if (caseHandler) {
                 await caseHandler(sock, messageInfo);
             }
@@ -260,22 +227,27 @@ async function connectToWhatsApp() {
     return sock;
 }
 
-// Helper: Get text preview dari message
 function getTextPreview(message) {
     if (!message) return '[Non-text]';
-    if (message.conversation) return message.conversation.substring(0, 50);
-    if (message.extendedTextMessage?.text) return message.extendedTextMessage.text.substring(0, 50);
-    if (message.imageMessage?.caption) return '[Image] ' + message.imageMessage.caption.substring(0, 40);
-    if (message.videoMessage?.caption) return '[Video] ' + message.videoMessage.caption.substring(0, 40);
+    if (message.conversation) {
+        return message.conversation.length > 50 ? 
+               message.conversation.substring(0, 50) + '...' : 
+               message.conversation;
+    }
+    if (message.extendedTextMessage?.text) {
+        const txt = message.extendedTextMessage.text;
+        return txt.length > 50 ? txt.substring(0, 50) + '...' : txt;
+    }
+    if (message.imageMessage) return '[Image]';
+    if (message.videoMessage) return '[Video]';
     if (message.stickerMessage) return '[Sticker]';
     if (message.audioMessage) return '[Audio]';
     if (message.documentMessage) return '[Document]';
+    if (message.contactMessage) return '[Contact]';
+    if (message.locationMessage) return '[Location]';
     return '[Other]';
 }
 
-// ============================================
-// MAIN FUNCTION
-// ============================================
 async function main() {
     console.clear();
     console.log('═══════════════════════════════════════');
@@ -284,16 +256,12 @@ async function main() {
     console.log(`📌 Bot     : ${global.botConfig.name}`);
     console.log(`📌 Version : ${global.botConfig.version}`);
     console.log(`📌 Owner   : ${global.botConfig.owner}`);
-    console.log(`📌 Mode    : Pairing Code (Termux)`);
+    console.log(`📌 Mode    : Pairing Code`);
     console.log('═══════════════════════════════════════\n');
     
-    // Buat folder
     createRequiredFolders();
-    
-    // Load modules
     loadModules();
     
-    // Connect to WhatsApp
     try {
         await connectToWhatsApp();
     } catch (err) {
@@ -302,9 +270,6 @@ async function main() {
     }
 }
 
-// ============================================
-// ERROR HANDLERS
-// ============================================
 process.on('uncaughtException', (err) => {
     console.error('❌ Uncaught Exception:', err.message);
 });
@@ -315,11 +280,10 @@ process.on('unhandledRejection', (reason) => {
 
 process.on('SIGINT', () => {
     console.log('\n👋 Bot shutting down...');
-    if (reminderSystem) reminderSystem.stop();
+    if (reminderSystem) {
+        try { reminderSystem.stop(); } catch (e) {}
+    }
     process.exit(0);
 });
 
-// ============================================
-// START BOT
-// ============================================
 main();
