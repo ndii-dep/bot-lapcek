@@ -10,51 +10,29 @@ const { getUserLevel, hasPermission, getLevelName, addPartner, removePartner, li
 const { addChannel, addGroup, removeChannel, removeGroup, getChannels, getGroups, getAllTargets } = require('./lib/channelManager');
 const { toAudio, toPTT, toVideo, ffmpeg } = require('./lib/converter');
 const didYouMean = require('didyoumean');
-
-// Ambil semua command dari file ini secara otomatis
 const fs = require('fs');
 const path = require('path');
 
+// Ambil semua command dari file ini secara otomatis
 function getAllCommands() {
     const commands = [];
     const filePath = __filename;
     const content = fs.readFileSync(filePath, 'utf8');
     
-    // Cari semua case di switch statement
     const caseRegex = /case\s+['"]([^'"]+)['"]\s*:/g;
     let match;
     while ((match = caseRegex.exec(content)) !== null) {
         commands.push(match[1]);
     }
     
-    return [...new Set(commands)]; // Hapus duplikat
+    return [...new Set(commands)];
 }
 
 const allCommands = getAllCommands();
 
-module.exports = async function(sock, messageInfo) {
-    const { from, pushName, isGroup, isChannel, message, key } = messageInfo;
-    
-    let text = '';
-    if (message?.conversation) {
-        text = message.conversation;
-    } else if (message?.extendedTextMessage?.text) {
-        text = message.extendedTextMessage.text;
-    } else if (message?.imageMessage?.caption) {
-        text = message.imageMessage.caption;
-    } else if (message?.videoMessage?.caption) {
-        text = message.videoMessage.caption;
-    }
-    
-    if (!text) return;
-    
-    const prefix = global.botConfig.prefix;
-    if (!text.startsWith(prefix)) return;
-
-    // ============ QUOTED MESSAGE UTILITY ============
+// ============ QUOTED MESSAGE UTILITY ============
 
 const createQuoted = {
-    // Untuk message dari Shop/Store
     shop: (text) => ({
         key: {
             remoteJid: '0@s.whatsapp.net',
@@ -69,7 +47,6 @@ const createQuoted = {
         }
     }),
 
-    // Untuk message dari Owner
     owner: (text) => ({
         key: {
             remoteJid: '0@s.whatsapp.net',
@@ -84,7 +61,6 @@ const createQuoted = {
         }
     }),
 
-    // Untuk message dari Bot
     bot: (text) => ({
         key: {
             remoteJid: '0@s.whatsapp.net',
@@ -99,7 +75,6 @@ const createQuoted = {
         }
     }),
 
-    // Untuk message dengan timestamp
     time: (text) => {
         const now = new Date();
         const timeStr = now.toLocaleTimeString('id-ID', { 
@@ -131,7 +106,6 @@ const createQuoted = {
         };
     },
 
-    // Untuk message dari Channel tertentu
     channel: (channelId, channelName, text) => ({
         key: {
             remoteJid: '0@s.whatsapp.net',
@@ -146,7 +120,6 @@ const createQuoted = {
         }
     }),
 
-    // Untuk message dengan custom
     custom: (jid, name, text) => ({
         key: {
             remoteJid: '0@s.whatsapp.net',
@@ -162,7 +135,6 @@ const createQuoted = {
     })
 };
 
-// Fungsi untuk mendapatkan quoted berdasarkan tipe
 function getQuoted(type, text) {
     const types = {
         shop: createQuoted.shop,
@@ -184,18 +156,96 @@ function getQuoted(type, text) {
         return func(text);
     }
 }
+
+module.exports = async function(sock, messageInfo) {
+    const { from, pushName, isGroup, isChannel, message, key } = messageInfo;
     
-    const args = text.slice(prefix.length).trim().split(/ +/);
-    const cmd = args[0]?.toLowerCase() || '';
-    const commandArgs = args.slice(1);
+    let text = '';
+    if (message?.conversation) {
+        text = message.conversation;
+    } else if (message?.extendedTextMessage?.text) {
+        text = message.extendedTextMessage.text;
+    } else if (message?.imageMessage?.caption) {
+        text = message.imageMessage.caption;
+    } else if (message?.videoMessage?.caption) {
+        text = message.videoMessage.caption;
+    }
+    
+    if (!text) return;
+    
+    // Deteksi prefix: . untuk bot, / untuk shop
+    const botPrefix = global.botConfig.prefix;
+    const shopPrefix = '/';
+    
+    let prefix = '';
+    let cmd = '';
+    let commandArgs = [];
+    
+    if (text.startsWith(shopPrefix)) {
+        prefix = shopPrefix;
+        const args = text.slice(prefix.length).trim().split(/ +/);
+        cmd = args[0]?.toLowerCase() || '';
+        commandArgs = args.slice(1);
+    } else if (text.startsWith(botPrefix)) {
+        prefix = botPrefix;
+        const args = text.slice(prefix.length).trim().split(/ +/);
+        cmd = args[0]?.toLowerCase() || '';
+        commandArgs = args.slice(1);
+    } else {
+        return;
+    }
     
     const senderNumber = from.split('@')[0];
     const userLevel = getUserLevel(senderNumber, pushName);
     const levelName = getLevelName(userLevel);
     
     const chatType = isChannel ? 'Channel' : isGroup ? 'Group' : 'Private';
-    console.log(`⚡ [${chatType}] ${levelName} ${pushName}: ${cmd} ${commandArgs.join(' ')}`);
+    console.log(`⚡ [${chatType}] ${levelName} ${pushName}: ${prefix}${cmd} ${commandArgs.join(' ')}`);
     
+    // Handle shop commands dengan prefix /
+    if (prefix === shopPrefix) {
+        switch(cmd) {
+            case 'shop':
+            case 'store':
+            case 'toko':
+                await cmdShop(sock, from, commandArgs);
+                break;
+                
+            case 'layanan':
+            case 'services':
+            case 'jasa':
+                await cmdShopServices(sock, from, commandArgs);
+                break;
+                
+            case 'harga':
+            case 'price':
+            case 'pricelist':
+                await cmdShopPrice(sock, from, commandArgs);
+                break;
+                
+            case 'order':
+            case 'pesan':
+            case 'beli':
+                await cmdShopOrder(sock, from, commandArgs, pushName, messageInfo);
+                break;
+                
+            case 'help':
+            case 'bantuan':
+            case '?':
+                await cmdShopHelp(sock, from);
+                break;
+                
+            default:
+                await sock.sendMessage(from, {
+                    text: `❌ *Command Shop tidak ditemukan!*\n\nCommand *${prefix}${cmd}* tidak dikenal.\n\n💡 Ketik */help* untuk melihat daftar command shop.`,
+                    quoted: createQuoted.shop('🛍️ FestiveShopID')
+                });
+                break;
+        }
+        return;
+    }
+    
+    // Handle bot commands dengan prefix .
     if (!hasPermission(senderNumber, cmd, pushName)) {
         await sock.sendMessage(from, {
             text: `🔒 *Akses Ditolak!*\n\nCommand *${prefix}${cmd}* membutuhkan level yang lebih tinggi.\n\n👤 Level kamu: ${levelName}\n🔑 Dibutuhkan: Partner atau Owner\n\n💡 Hubungi owner untuk jadi partner.`
@@ -310,7 +360,7 @@ function getQuoted(type, text) {
             case 'cari':
             case 'find':
             case 'cmd':
-                await cmdSearch(sock, from, commandArgs, prefix);
+                await cmdSearch(sock, from, commandArgs);
                 break;
                 
             case 'addpr':
@@ -432,7 +482,6 @@ function getQuoted(type, text) {
                 
             default:
                 if (cmd) {
-                    // Gunakan didyoumean untuk suggest command
                     didYouMean.threshold = 0.4;
                     didYouMean.caseSensitive = false;
                     
@@ -440,11 +489,13 @@ function getQuoted(type, text) {
                     
                     if (suggestion && suggestion !== cmd) {
                         await sock.sendMessage(from, { 
-                            text: `❌ *Command tidak ditemukan!*\n\nCommand *${prefix}${cmd}* tidak ditemukan.\n\n💡 Mungkin maksud kamu: *${prefix}${suggestion}*\n\nKetik *${prefix}menu* untuk melihat semua command.`
+                            text: `❌ *Command tidak ditemukan!*\n\nCommand *${prefix}${cmd}* tidak ditemukan.\n\n💡 Mungkin maksud kamu: *${prefix}${suggestion}*\n\nKetik *${prefix}menu* untuk melihat semua command.`,
+                            quoted: createQuoted.bot(`🤖 ${global.botConfig.name}`)
                         });
                     } else {
                         await sock.sendMessage(from, { 
-                            text: `❌ *Unknown Command*\n\nCommand *${prefix}${cmd}* tidak ditemukan.\n\nKetik *${prefix}menu* untuk melihat semua command.`
+                            text: `❌ *Unknown Command*\n\nCommand *${prefix}${cmd}* tidak ditemukan.\n\nKetik *${prefix}menu* untuk melihat semua command.`,
+                            quoted: createQuoted.bot(`🤖 ${global.botConfig.name}`)
                         });
                     }
                 }
@@ -454,11 +505,308 @@ function getQuoted(type, text) {
         console.error(`❌ Error executing ${cmd}:`, err.message);
         try {
             await sock.sendMessage(from, { 
-                text: '❌ Maaf, terjadi kesalahan saat memproses command.' 
+                text: '❌ Maaf, terjadi kesalahan saat memproses command.',
+                quoted: createQuoted.bot('⚠️ Error')
             });
         } catch (e) {}
     }
 };
+
+// ============ SHOP COMMANDS ============
+
+async function cmdShop(sock, from, args) {
+    const text = `╔══════════════════════════════════════╗\n` +
+                 `║       🛍️ FESTIVESHOPID            ║\n` +
+                 `║    Your Trusted Digital Creative   ║\n` +
+                 `║           Partner                  ║\n` +
+                 `╚══════════════════════════════════════╝\n\n` +
+                 `FestiveShopID merupakan layanan digital yang menyediakan berbagai kebutuhan kreatif dan digital dengan proses yang cepat, aman, dan terpercaya. Seluruh katalog produk dapat diakses langsung melalui WhatsApp Bot, sehingga pelanggan dapat melihat layanan, harga, dan melakukan pemesanan dengan mudah.\n\n` +
+                 `📌 *Layanan yang tersedia:*\n` +
+                 `• 🎨 Jasa edit foto, poster, feed/grid Instagram, dan video mulai dari Rp10.000\n` +
+                 `• 🖥️ Panel Pterodactyl mulai dari Rp2.000 per GB RAM\n` +
+                 `• 🌐 Jasa pembuatan website mulai dari Rp10.000\n\n` +
+                 `⭐ *Mengapa memilih FestiveShopID?*\n` +
+                 `• Katalog lengkap langsung melalui WhatsApp Bot\n` +
+                 `• Transaksi aman, cepat, dan terpercaya\n` +
+                 `• Dukungan pelanggan yang memadai dan ramah\n` +
+                 `• Metode pembayaran mudah\n` +
+                 `• Harga terjangkau dengan kualitas terbaik\n\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                 `💡 *Command Shop:*\n` +
+                 `/layanan - Lihat daftar layanan\n` +
+                 `/harga - Lihat daftar harga\n` +
+                 `/order - Pemesanan\n` +
+                 `/help - Bantuan\n\n` +
+                 `📱 *Contact:*\n` +
+                 `👤 Owner: ${global.botConfig.owner}\n` +
+                 `📞 WA: ${global.botConfig.noOwner}`;
+    
+    const buttons = [
+        { buttonId: '/layanan', buttonText: { displayText: '📋 Layanan' }, type: 1 },
+        { buttonId: '/harga', buttonText: { displayText: '💰 Harga' }, type: 1 },
+        { buttonId: '/order', buttonText: { displayText: '🛒 Order' }, type: 1 },
+        { buttonId: '/help', buttonText: { displayText: '❓ Bantuan' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1,
+        quoted: createQuoted.shop('🛍️ FestiveShopID')
+    });
+}
+
+async function cmdShopServices(sock, from, args) {
+    const text = `╔══════════════════════════════════════╗\n` +
+                 `║     📋 DAFTAR LAYANAN              ║\n` +
+                 `║        FestiveShopID               ║\n` +
+                 `╚══════════════════════════════════════╝\n\n` +
+                 `🎨 *JASA KREATIF DIGITAL*\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                 `1. Edit Foto & Poster\n` +
+                 `   • Edit foto profesional\n` +
+                 `   • Desain poster/certificate\n` +
+                 `   • Thumbnail YouTube/Instagram\n` +
+                 `   • Mulai dari Rp10.000\n\n` +
+                 `2. Feed/Grid Instagram\n` +
+                 `   • Desain feed aesthetic\n` +
+                 `   • Grid Instagram profesional\n` +
+                 `   • Story highlight cover\n` +
+                 `   • Mulai dari Rp15.000\n\n` +
+                 `3. Edit Video\n` +
+                 `   • Edit video pendek\n` +
+                 `   • Reels/TikTok editing\n` +
+                 `   • Intro/Outro video\n` +
+                 `   • Mulai dari Rp20.000\n\n` +
+                 `🖥️ *PANEL PTERODACTYL*\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                 `• Panel Pterodactyl premium\n` +
+                 `• RAM mulai dari 1GB\n` +
+                 `• Harga mulai Rp2.000/GB\n\n` +
+                 `🌐 *JASA PEMBUATAN WEBSITE*\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                 `• Website profil perusahaan\n` +
+                 `• Landing page\n` +
+                 `• Toko online sederhana\n` +
+                 `• Mulai dari Rp10.000\n\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                 `💡 Untuk pemesanan: /order\n` +
+                 `💰 Lihat harga: /harga`;
+    
+    const buttons = [
+        { buttonId: '/harga', buttonText: { displayText: '💰 Harga' }, type: 1 },
+        { buttonId: '/order', buttonText: { displayText: '🛒 Order' }, type: 1 },
+        { buttonId: '/shop', buttonText: { displayText: '🏪 Shop' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1,
+        quoted: createQuoted.shop('📋 Daftar Layanan')
+    });
+}
+
+async function cmdShopPrice(sock, from, args) {
+    const text = `╔══════════════════════════════════════╗\n` +
+                 `║     💰 DAFTAR HARGA                ║\n` +
+                 `║        FestiveShopID               ║\n` +
+                 `╚══════════════════════════════════════╝\n\n` +
+                 `🎨 *JASA KREATIF DIGITAL*\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                 `📌 Edit Foto & Poster\n` +
+                 `   🟢 Basic    : Rp10.000\n` +
+                 `   🟡 Premium  : Rp25.000\n` +
+                 `   🔴 Pro      : Rp50.000\n\n` +
+                 `📌 Feed/Grid Instagram\n` +
+                 `   🟢 1 Post   : Rp15.000\n` +
+                 `   🟡 3 Posts  : Rp40.000\n` +
+                 `   🔴 6 Posts  : Rp75.000\n\n` +
+                 `📌 Edit Video\n` +
+                 `   🟢 15 Detik : Rp20.000\n` +
+                 `   🟡 30 Detik : Rp35.000\n` +
+                 `   🔴 60 Detik : Rp60.000\n\n` +
+                 `🖥️ *PANEL PTERODACTYL*\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                 `• 1 GB RAM  : Rp2.000\n` +
+                 `• 2 GB RAM  : Rp4.000\n` +
+                 `• 4 GB RAM  : Rp8.000\n` +
+                 `• 8 GB RAM  : Rp15.000\n\n` +
+                 `🌐 *JASA PEMBUATAN WEBSITE*\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                 `• Landing Page   : Rp10.000\n` +
+                 `• Profil Company : Rp25.000\n` +
+                 `• Toko Online    : Rp50.000\n` +
+                 `• Custom         : Rp100.000+\n\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                 `💡 Order via: /order\n` +
+                 `📋 Layanan: /layanan`;
+    
+    const buttons = [
+        { buttonId: '/layanan', buttonText: { displayText: '📋 Layanan' }, type: 1 },
+        { buttonId: '/order', buttonText: { displayText: '🛒 Order' }, type: 1 },
+        { buttonId: '/shop', buttonText: { displayText: '🏪 Shop' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1,
+        quoted: createQuoted.shop('💰 Daftar Harga')
+    });
+}
+
+async function cmdShopOrder(sock, from, args, pushName, messageInfo) {
+    if (args.length === 0) {
+        const text = `╔══════════════════════════════════════╗\n` +
+                     `║     🛒 CARA PEMESANAN             ║\n` +
+                     `║        FestiveShopID               ║\n` +
+                     `╚══════════════════════════════════════╝\n\n` +
+                     `📌 *Format Pemesanan:*\n` +
+                     `/order <layanan>|<detail>|<jumlah>\n\n` +
+                     `💡 *Contoh:*\n` +
+                     `/order Edit Foto|Edit foto untuk IG|2 foto\n` +
+                     `/order Panel|4GB RAM|1 bulan\n` +
+                     `/order Website|Landing Page bisnis|1\n\n` +
+                     `📝 *Detail pesanan:*\n` +
+                     `1. Nama layanan\n` +
+                     `2. Spesifikasi/detail\n` +
+                     `3. Jumlah/durasi\n\n` +
+                     `✅ Setelah order, kamu akan dihubungi admin\n` +
+                     `📱 Contact: ${global.botConfig.noOwner}`;
+        
+        const buttons = [
+            { buttonId: '/layanan', buttonText: { displayText: '📋 Layanan' }, type: 1 },
+            { buttonId: '/harga', buttonText: { displayText: '💰 Harga' }, type: 1 },
+            { buttonId: '/shop', buttonText: { displayText: '🏪 Shop' }, type: 1 }
+        ];
+        
+        await sock.sendMessage(from, {
+            text: text,
+            buttons: buttons,
+            headerType: 1,
+            quoted: createQuoted.shop('🛒 Pemesanan')
+        });
+        return;
+    }
+    
+    const fullArgs = args.join(' ');
+    const parts = fullArgs.split('|').map(p => p.trim());
+    
+    const service = parts[0] || '';
+    const detail = parts[1] || '';
+    const quantity = parts[2] || '1';
+    
+    if (!service) {
+        await sock.sendMessage(from, {
+            text: `❌ *Layanan tidak boleh kosong!*\n\nFormat: /order <layanan>|<detail>|<jumlah>\n\n💡 Contoh: /order Edit Foto|Edit foto IG|2`,
+            quoted: createQuoted.shop('⚠️ Error')
+        });
+        return;
+    }
+    
+    // Simpan order ke log (bisa ditambahkan ke database)
+    const orderData = {
+        id: `ORD${Date.now()}`,
+        customer: pushName,
+        number: from.split('@')[0],
+        service: service,
+        detail: detail,
+        quantity: quantity,
+        timestamp: new Date().toLocaleString('id-ID'),
+        status: 'pending'
+    };
+    
+    // Kirim konfirmasi ke pelanggan
+    const confirmText = `╔══════════════════════════════════════╗\n` +
+                        `║     ✅ ORDER BERHASIL              ║\n` +
+                        `║        FestiveShopID               ║\n` +
+                        `╚══════════════════════════════════════╝\n\n` +
+                        `🆔 *ID Order:* ${orderData.id}\n` +
+                        `👤 *Nama:* ${orderData.customer}\n` +
+                        `📱 *No. WA:* ${orderData.number}\n` +
+                        `📌 *Layanan:* ${orderData.service}\n` +
+                        `📝 *Detail:* ${orderData.detail || '-'}\n` +
+                        `📦 *Jumlah:* ${orderData.quantity}\n` +
+                        `🕐 *Waktu:* ${orderData.timestamp}\n\n` +
+                        `📊 *Status:* Pending (menunggu konfirmasi)\n\n` +
+                        `💬 *Admin akan segera menghubungi Anda!*\n` +
+                        `⏳ Mohon tunggu 1-5 menit.\n\n` +
+                        `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                        `📱 Contact Admin: ${global.botConfig.noOwner}`;
+    
+    await sock.sendMessage(from, {
+        text: confirmText,
+        quoted: createQuoted.shop('🛒 Order Berhasil')
+    });
+    
+    // Kirim notifikasi ke owner
+    const ownerNumber = global.botConfig.noOwner.replace(/^0/, '62') + '@s.whatsapp.net';
+    const notifText = `╔══════════════════════════════════════╗\n` +
+                      `║     📦 ORDER BARU!                ║\n` +
+                      `║        FestiveShopID               ║\n` +
+                      `╚══════════════════════════════════════╝\n\n` +
+                      `🆔 *ID Order:* ${orderData.id}\n` +
+                      `👤 *Pelanggan:* ${orderData.customer}\n` +
+                      `📱 *No. WA:* ${orderData.number}\n` +
+                      `📌 *Layanan:* ${orderData.service}\n` +
+                      `📝 *Detail:* ${orderData.detail || '-'}\n` +
+                      `📦 *Jumlah:* ${orderData.quantity}\n` +
+                      `🕐 *Waktu:* ${orderData.timestamp}\n\n` +
+                      `💡 Segera konfirmasi ke pelanggan!`;
+    
+    try {
+        await sock.sendMessage(ownerNumber, {
+            text: notifText,
+            quoted: createQuoted.shop('📦 Order Baru!')
+        });
+    } catch (e) {
+        console.log('Gagal kirim notif ke owner:', e.message);
+    }
+}
+
+async function cmdShopHelp(sock, from) {
+    const text = `╔══════════════════════════════════════╗\n` +
+                 `║     ❓ BANTUAN SHOP                ║\n` +
+                 `║        FestiveShopID               ║\n` +
+                 `╚══════════════════════════════════════╝\n\n` +
+                 `📌 *Daftar Command Shop:*\n\n` +
+                 `🏪 */shop* atau */store*\n` +
+                 `   Menampilkan info toko dan layanan\n\n` +
+                 `📋 */layanan* atau */services*\n` +
+                 `   Menampilkan daftar layanan yang tersedia\n\n` +
+                 `💰 */harga* atau */price*\n` +
+                 `   Menampilkan daftar harga\n\n` +
+                 `🛒 */order* atau */pesan*\n` +
+                 `   Melakukan pemesanan\n` +
+                 `   Format: /order <layanan>|<detail>|<jumlah>\n\n` +
+                 `❓ */help* atau */bantuan*\n` +
+                 `   Menampilkan bantuan ini\n\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                 `📱 *Contact Admin:*\n` +
+                 `👤 ${global.botConfig.owner}\n` +
+                 `📞 ${global.botConfig.noOwner}\n\n` +
+                 `💡 *Tips:*\n` +
+                 `• Gunakan prefix / untuk command shop\n` +
+                 `• Gunakan prefix . untuk command bot\n` +
+                 `• Semua transaksi aman & terpercaya`;
+    
+    const buttons = [
+        { buttonId: '/shop', buttonText: { displayText: '🏪 Shop' }, type: 1 },
+        { buttonId: '/layanan', buttonText: { displayText: '📋 Layanan' }, type: 1 },
+        { buttonId: '/harga', buttonText: { displayText: '💰 Harga' }, type: 1 },
+        { buttonId: '/order', buttonText: { displayText: '🛒 Order' }, type: 1 }
+    ];
+    
+    await sock.sendMessage(from, {
+        text: text,
+        buttons: buttons,
+        headerType: 1,
+        quoted: createQuoted.shop('❓ Bantuan')
+    });
+}
+
+// ============ BOT COMMANDS (existing functions) ============
 
 async function cmdInfo(sock, from) {
     const prefix = global.botConfig.prefix;
@@ -475,7 +823,7 @@ async function cmdInfo(sock, from) {
                  `║     🤖 ${global.botConfig.name}     ║\n` +
                  `║   v${global.botConfig.version}  |  By ${global.botConfig.owner}   ║\n` +
                  `╚══════════════════════════╝\n\n` +
-                 `📌 *DAFTAR COMMAND*\n` +
+                 `📌 *DAFTAR COMMAND BOT*\n` +
                  `━━━━━━━━━━━━━━━━━━━━━━\n\n` +
                  `📋 *Info:*\n` +
                  `  ${prefix}info - Info bot\n` +
@@ -526,6 +874,12 @@ async function cmdInfo(sock, from) {
                  `  ${prefix}mylevel - Cek level user\n` +
                  `  ${prefix}tqto - Credits & Thanks\n\n` +
                  `━━━━━━━━━━━━━━━━━━━━━━\n` +
+                 `🛍️ *Shop Command (prefix /):*\n` +
+                 `  /shop - Info FestiveShopID\n` +
+                 `  /layanan - Daftar layanan\n` +
+                 `  /harga - Daftar harga\n` +
+                 `  /order - Pemesanan\n\n` +
+                 `━━━━━━━━━━━━━━━━━━━━━━\n` +
                  `⏰ Reminder otomatis:\n` +
                  `🌅 12:00 | ☀️ 16:00 | 🌙 20:00\n\n` +
                  `💡 Contoh: ${prefix}mapel senin\n` +
@@ -534,7 +888,8 @@ async function cmdInfo(sock, from) {
     await sock.sendMessage(from, {
         text: text,
         buttons: buttons,
-        headerType: 1
+        headerType: 1,
+        quoted: createQuoted.bot(`🤖 ${global.botConfig.name}`)
     });
 }
 
