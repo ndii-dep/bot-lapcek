@@ -71,7 +71,7 @@ let reminderSystem = null;
 
 function loadModules() {
     try {
-        caseHandler = require('./case');
+        caseHandler = require('./case.js');
         console.log('✅ Case handler loaded');
     } catch (err) {
         console.error('❌ Failed to load case.js:', err.message);
