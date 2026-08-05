@@ -40,7 +40,7 @@ const createQuoted = {
         },
         message: {
             newsletterAdminInviteMessage: {
-                newsletterJid: '120363166641556515@newsletter',
+                newsletterJid: '120363416897292688@newsletter',
                 newsletterName: 'FestiveShopID',
                 caption: text || '🛍️ FestiveShopID - Belanja Mudah & Terpercaya!'
             }
@@ -54,7 +54,7 @@ const createQuoted = {
         },
         message: {
             newsletterAdminInviteMessage: {
-                newsletterJid: '120363303234567890@newsletter',
+                newsletterJid: '120363416897292688@newsletter',
                 newsletterName: 'Owner NeoGoforward',
                 caption: text || '👑 Official Owner Bot'
             }
@@ -68,7 +68,7 @@ const createQuoted = {
         },
         message: {
             newsletterAdminInviteMessage: {
-                newsletterJid: '120363299999999999@newsletter',
+                newsletterJid: '120363416897292688@newsletter',
                 newsletterName: `${global.botConfig.name}`,
                 caption: text || `🤖 ${global.botConfig.name} v${global.botConfig.version}`
             }
@@ -98,7 +98,7 @@ const createQuoted = {
             },
             message: {
                 newsletterAdminInviteMessage: {
-                    newsletterJid: '120363333333333333@newsletter',
+                    newsletterJid: '120363416897292688@newsletter',
                     newsletterName: `⏰ ${timeStr}`,
                     caption: text || `📅 ${dateStr}\n🕐 ${timeStr} WIB`
                 }
@@ -113,7 +113,7 @@ const createQuoted = {
         },
         message: {
             newsletterAdminInviteMessage: {
-                newsletterJid: channelId || '120363000000000000@newsletter',
+                newsletterJid: channelId || '120363416897292688@newsletter',
                 newsletterName: channelName || 'Channel WhatsApp',
                 caption: text || '📢 Official Channel'
             }
