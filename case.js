@@ -30,7 +30,25 @@ function getAllCommands() {
 
 const allCommands = getAllCommands();
 
-// ============ QUOTED MESSAGE UTILITY ============
+
+
+module.exports = async function(sock, messageInfo) {
+    const { from, pushName, isGroup, isChannel, message, key } = messageInfo;
+    
+    let text = '';
+    if (message?.conversation) {
+        text = message.conversation;
+    } else if (message?.extendedTextMessage?.text) {
+        text = message.extendedTextMessage.text;
+    } else if (message?.imageMessage?.caption) {
+        text = message.imageMessage.caption;
+    } else if (message?.videoMessage?.caption) {
+        text = message.videoMessage.caption;
+    }
+    
+    if (!text) return;
+
+    // ============ QUOTED MESSAGE UTILITY ============
 
 const createQuoted = {
     shop: (text) => ({
@@ -133,24 +151,7 @@ const createQuoted = {
             }
         }
     })
-};
-
-module.exports = async function(sock, messageInfo) {
-    const { from, pushName, isGroup, isChannel, message, key } = messageInfo;
-    
-    let text = '';
-    if (message?.conversation) {
-        text = message.conversation;
-    } else if (message?.extendedTextMessage?.text) {
-        text = message.extendedTextMessage.text;
-    } else if (message?.imageMessage?.caption) {
-        text = message.imageMessage.caption;
-    } else if (message?.videoMessage?.caption) {
-        text = message.videoMessage.caption;
-    }
-    
-    if (!text) return;
-    
+}
     // Deteksi prefix: . untuk bot, / untuk shop
     const botPrefix = global.botConfig.prefix;
     const shopPrefix = '/';
