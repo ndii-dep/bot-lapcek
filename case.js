@@ -9,6 +9,11 @@ const { suggestCommand, formatSuggestion } = require('./lib/cmdSuggest');
 const { addPR, deletePR, getPRs, getPRById, getPRStats, formatPRList, formatPRDetail } = require('./lib/prTracker');
 const { getUserLevel, hasPermission, getLevelName, addPartner, removePartner, listPartners, LEVELS, PERMISSIONS, getPermissionList } = require('./lib/permission');
 const { addChannel, addGroup, removeChannel, removeGroup, getChannels, getGroups, getAllTargets } = require('./lib/channelManager');
+const { 
+    getFeature, getFeatureStatus, toggleFeature, 
+    updateFeatureMessage, updateFeatureEmoji,
+    updateAutoPostSWCaption, getAutoPostSWCaption
+} = require('./lib/autoFeatures');
 const { getShopStatus, toggleShop, getCatalog, getProductById, getProductsByCategory, getCategories, createOrder, getOrders, updateOrderStatus, getShopStats, formatCatalog, formatProductDetail, formatOrderDetail, formatOrderList, CONFIG: SHOP_CONFIG } = require('./lib/shop');
 
 module.exports = async function(sock, messageInfo) {
@@ -351,6 +356,68 @@ module.exports = async function(sock, messageInfo) {
             case 'role':
                 await cmdMyLevel(sock, from, pushName, senderNumber);
                 break;
+
+            
+case 'autowelcome':
+case 'welcome':
+    await cmdToggleFeature(sock, from, commandArgs, 'welcome', pushName, userLevel);
+    break;
+    
+case 'autogoodbye':
+case 'goodbye':
+    await cmdToggleFeature(sock, from, commandArgs, 'goodbye', pushName, userLevel);
+    break;
+    
+case 'autotyping':
+case 'typing':
+    await cmdToggleFeature(sock, from, commandArgs, 'autotyping', pushName, userLevel);
+    break;
+    
+case 'autorecord':
+case 'record':
+    await cmdToggleFeature(sock, from, commandArgs, 'autorecord', pushName, userLevel);
+    break;
+    
+case 'autoread':
+case 'read':
+    await cmdToggleFeature(sock, from, commandArgs, 'autoread', pushName, userLevel);
+    break;
+    
+case 'autopostsw':
+case 'postsw':
+    await cmdToggleFeature(sock, from, commandArgs, 'autopostsw', pushName, userLevel);
+    break;
+    
+case 'autoreactsw':
+case 'reactsw':
+    await cmdToggleFeature(sock, from, commandArgs, 'autoreactsw', pushName, userLevel);
+    break;
+    
+case 'setwelcome':
+case 'setwelcomemsg':
+    await cmdSetFeatureMessage(sock, from, commandArgs, 'welcome', pushName, userLevel);
+    break;
+    
+case 'setgoodbye':
+case 'setgoodbyemsg':
+    await cmdSetFeatureMessage(sock, from, commandArgs, 'goodbye', pushName, userLevel);
+    break;
+    
+case 'setreact':
+case 'setreactemoji':
+    await cmdSetReactEmoji(sock, from, commandArgs, pushName, userLevel);
+    break;
+    
+case 'setpostsw':
+case 'setpostcaption':
+    await cmdSetPostSWCaption(sock, from, commandArgs, pushName, userLevel);
+    break;
+    
+case 'autofeatures':
+case 'auto':
+    await cmdListAutoFeatures(sock, from);
+    break;
+
                 
             default:
                 if (cmd) {
@@ -394,6 +461,145 @@ module.exports = async function(sock, messageInfo) {
         } catch (e) {}
     }
 };
+
+async function cmdToggleFeature(sock, from, args, featureName, pushName, userLevel) {
+    if (userLevel < 2) {
+        await sock.sendMessage(from, { text: '🔒 Hanya owner yang bisa mengubah pengaturan ini.' });
+        return;
+    }
+    
+    const status = args[0]?.toLowerCase();
+    if (!status || (status !== 'on' && status !== 'off')) {
+        const current = getFeature(featureName);
+        const emoji = current?.status === 'on' ? '🟢' : '🔴';
+        await sock.sendMessage(from, {
+            text: `${emoji} *${featureName.toUpperCase()}*\n\nStatus: ${current?.status?.toUpperCase() || 'OFF'}\n\nGunakan: .${featureName} on/off`
+        });
+        return;
+    }
+    
+    const result = toggleFeature(featureName, status);
+    
+    if (result.success) {
+        const emoji = status === 'on' ? '🟢' : '🔴';
+        await sock.sendMessage(from, { text: `${emoji} *${featureName.toUpperCase()}* berhasil di${status === 'on' ? 'aktif' : 'nonaktif'}kan!` });
+        
+        if (featureName === 'autopostsw' && status === 'on') {
+            try {
+                const caption = getAutoPostSWCaption();
+                await sock.sendMessage('status@broadcast', { text: caption });
+            } catch (e) {}
+        }
+    } else {
+        await sock.sendMessage(from, { text: `❌ ${result.error}` });
+    }
+}
+
+async function cmdSetFeatureMessage(sock, from, args, featureName, pushName, userLevel) {
+    if (userLevel < 2) {
+        await sock.sendMessage(from, { text: '🔒 Hanya owner.' });
+        return;
+    }
+    
+    if (args.length === 0) {
+        const feature = getFeature(featureName);
+        await sock.sendMessage(from, {
+            text: `📝 *SET ${featureName.toUpperCase()} MESSAGE*\n\nCurrent: ${feature?.message || '-'}\n\nGunakan: .set${featureName} <pesan>\n\nVariabel: @user @group`
+        });
+        return;
+    }
+    
+    const message = args.join(' ');
+    const result = updateFeatureMessage(featureName, message);
+    
+    if (result.success) {
+        await sock.sendMessage(from, { text: `✅ Pesan ${featureName} diupdate!\n\n"${message}"` });
+    } else {
+        await sock.sendMessage(from, { text: `❌ ${result.error}` });
+    }
+}
+
+async function cmdSetReactEmoji(sock, from, args, pushName, userLevel) {
+    if (userLevel < 2) {
+        await sock.sendMessage(from, { text: '🔒 Hanya owner.' });
+        return;
+    }
+    
+    if (args.length === 0) {
+        const feature = getFeature('autoreactsw');
+        await sock.sendMessage(from, {
+            text: `😍 *SET REACT EMOJI*\n\nCurrent: ${feature?.emoji || '❤️'}\n\nGunakan: .setreact <emoji>`
+        });
+        return;
+    }
+    
+    const result = updateFeatureEmoji('autoreactsw', args[0]);
+    
+    if (result.success) {
+        await sock.sendMessage(from, { text: `✅ Emoji react diupdate ke: ${args[0]}` });
+    } else {
+        await sock.sendMessage(from, { text: `❌ ${result.error}` });
+    }
+}
+
+async function cmdSetPostSWCaption(sock, from, args, pushName, userLevel) {
+    if (userLevel < 2) {
+        await sock.sendMessage(from, { text: '🔒 Hanya owner.' });
+        return;
+    }
+    
+    if (args.length === 0) {
+        const caption = getAutoPostSWCaption();
+        await sock.sendMessage(from, {
+            text: `📢 *SET POST SW CAPTION*\n\nCurrent: ${caption}\n\nGunakan: .setpostsw <caption>`
+        });
+        return;
+    }
+    
+    const caption = args.join(' ');
+    updateAutoPostSWCaption(caption);
+    
+    await sock.sendMessage(from, { text: `✅ Caption Post SW diupdate!\n\n"${caption}"` });
+}
+
+async function cmdListAutoFeatures(sock, from) {
+    const features = [
+        { name: 'welcome', label: 'Welcome Canvas', cmd: '.welcome' },
+        { name: 'goodbye', label: 'Goodbye Canvas', cmd: '.goodbye' },
+        { name: 'autotyping', label: 'Auto Typing', cmd: '.typing' },
+        { name: 'autorecord', label: 'Auto Record VN', cmd: '.record' },
+        { name: 'autoread', label: 'Auto Read', cmd: '.read' },
+        { name: 'autopostsw', label: 'Auto Post SW', cmd: '.postsw' },
+        { name: 'autoreactsw', label: 'Auto React SW', cmd: '.reactsw' },
+    ];
+    
+    let text = `⚙️ *AUTO FEATURES STATUS*\n\n`;
+    
+    features.forEach(f => {
+        const status = getFeatureStatus(f.name);
+        text += `${status ? '🟢' : '🔴'} *${f.label}*\n`;
+        text += `   ${f.cmd} on/off\n`;
+        
+        if (f.name === 'welcome' || f.name === 'goodbye') {
+            const feature = getFeature(f.name);
+            text += `   📝 .set${f.name} <pesan>\n`;
+        }
+        if (f.name === 'autoreactsw') {
+            const feature = getFeature(f.name);
+            text += `   😍 Emoji: ${feature?.emoji || '❤️'}\n`;
+        }
+        
+        text += `\n`;
+    });
+    
+    text += `👑 *Owner only commands*\n\n`;
+    text += `.setwelcome <pesan> - Set welcome message\n`;
+    text += `.setgoodbye <pesan> - Set goodbye message\n`;
+    text += `.setreact <emoji> - Set react emoji\n`;
+    text += `.setpostsw <caption> - Set post SW caption`;
+    
+    await sock.sendMessage(from, { text });
+                               }
 
 async function sendWithButtons(sock, from, text, footer, buttons) {
     try {
