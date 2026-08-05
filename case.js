@@ -1,5 +1,15 @@
 const schoolData = require('./lib/schoolData');
 const reminderSystem = require('./lib/reminder');
+const process = require('process');
+const moment = require("moment-timezone")
+const os = require('os');
+const didyoumean = require('didyoumean');
+const checkDiskSpace = require('check-disk-space').default;
+const speed = require('performance-now')
+const schedule = require("node-schedule");
+const archiver = require("archiver");
+const threshold = 0.72
+const similarity = require('similarity');
 const { alightMotion } = require('./lib/alightMotion');
 const { addSongFess, getSongFessStats, getAllSongFess } = require('./lib/songFess');
 const { addConfess, getConfessQueue, removeConfess } = require('./lib/confess');
@@ -36,6 +46,48 @@ module.exports = async function(sock, messageInfo) {
     const senderNumber = from.split('@')[0];
     const userLevel = getUserLevel(senderNumber, pushName);
     const levelName = getLevelName(userLevel);
+
+    const fsaluran = {
+            key: {
+                remoteJid: '0@s.whatsapp.net',
+                participant: '0@s.whatsapp.net'
+            },
+            message: {
+                newsletterAdminInviteMessage: {
+                    newsletterJid: '120363210705976689@newsletter',
+                    newsletterName: '',
+                    caption: body
+                }
+            }
+    }
+
+    const hariini = moment.tz('Asia/Jakarta').format('dddd, DD MMMM YYYY')
+        const wib = moment.tz('Asia/Jakarta').format('HH : mm : ss')
+        const wit = moment.tz('Asia/Jayapura').format('HH : mm : ss')
+        const wita = moment.tz('Asia/Makassar').format('HH : mm : ss')
+
+        const time2 = moment().tz('Asia/Jakarta').format('HH:mm:ss')
+        if (time2 < "23:59:00") {
+            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ᴍᴀʟᴀᴍ️'
+        }
+        if (time2 < "19:00:00") {
+            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ᴘᴇᴛᴀɴɢ'
+        }
+        if (time2 < "18:00:00") {
+            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ꜱᴏʀᴇ'
+        }
+        if (time2 < "15:00:00") {
+            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ꜱɪᴀɴɢ️'
+        }
+        if (time2 < "10:00:00") {
+            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ᴘᴀɢɪ'
+        }
+        if (time2 < "05:00:00") {
+            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ꜱᴜʙᴜʜ'
+        }
+        if (time2 < "03:00:00") {
+            var ucapanWaktu = 'ꜱᴇʟᴀᴍᴀᴛ ᴛᴇɴɢᴀʜ ᴍᴀʟᴀᴍ'
+        }
     
     const chatType = isChannel ? 'Channel' : isGroup ? 'Group' : 'Private';
     console.log(`⚡ [${chatType}] ${levelName} ${pushName}: ${cmd} ${commandArgs.join(' ')}`);
