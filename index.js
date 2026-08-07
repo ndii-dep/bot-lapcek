@@ -7,7 +7,6 @@ const {
     delay
 } = require('@whiskeysockets/baileys');
 const Pino = require('pino');
-const readline = require('readline');
 const fs = require('fs');
 const path = require('path');
 const { 
@@ -15,8 +14,6 @@ const {
     createWelcomeCanvas, 
     createGoodbyeCanvas, 
     getAutoPostSWCaption,
-    updateAutoPostSWCaption,
-    getLastAutoPostTime 
 } = require('./lib/autoFeatures');
 
 global.botConfig = {
@@ -30,28 +27,6 @@ global.botConfig = {
     channelId: '120363416897292688@newsletter',
     groupId: '@g.us',
 };
-
-function formatPhoneNumber(number) {
-    let cleaned = number.replace(/\D/g, '');
-    if (cleaned.startsWith('0')) {
-        cleaned = '62' + cleaned.substring(1);
-    } else if (cleaned.startsWith('62')) {
-    } else if (cleaned.length >= 8) {
-        cleaned = '62' + cleaned;
-    }
-    return cleaned;
-}
-
-function askQuestion(query) {
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-    });
-    return new Promise(resolve => rl.question(query, ans => {
-        rl.close();
-        resolve(ans);
-    }));
-}
 
 function createRequiredFolders() {
     const folders = [
@@ -136,9 +111,7 @@ async function connectToWhatsApp() {
             if (getFeatureStatus('autopostsw')) {
                 try {
                     const caption = getAutoPostSWCaption();
-                    await sock.sendMessage('status@broadcast', {
-                        text: caption
-                    });
+                    await sock.sendMessage('status@broadcast', { text: caption });
                     console.log('✅ Auto Post SW sent');
                 } catch (e) {
                     console.log('⚠️  Auto Post SW failed');
@@ -233,23 +206,22 @@ async function connectToWhatsApp() {
     });
     
     if (!sock.authState.creds.registered) {
+        const phoneNumber = global.botConfig.noBot || global.botConfig.noOwner;
+        const cleaned = phoneNumber.replace(/\D/g, '');
+        const formattedNumber = cleaned.startsWith('0') ? '62' + cleaned.slice(1) : cleaned.startsWith('62') ? cleaned : '62' + cleaned;
+        
         console.log('\n📱 BOT BELUM TERDAFTAR');
         console.log('═══════════════════════════════════════');
-        console.log('Silakan lakukan pairing code');
-        console.log('Masukkan nomor dengan awalan 0');
-        console.log('Contoh: 08771987646');
+        console.log(`🔄 Menggunakan nomor: ${phoneNumber}`);
+        console.log(`📞 Format: ${formattedNumber}`);
         console.log('═══════════════════════════════════════\n');
-        
-        const phoneNumber = await askQuestion('📞 Masukkan nomor WhatsApp: ');
-        const formattedNumber = formatPhoneNumber(phoneNumber);
-        console.log(`🔄 Memproses nomor: ${formattedNumber}`);
         
         try {
             const code = await sock.requestPairingCode(formattedNumber);
-            console.log('\n═══════════════════════════════════════');
+            console.log('═══════════════════════════════════════');
             console.log('✅ PAIRING CODE BERHASIL DIBUAT');
             console.log('═══════════════════════════════════════');
-            console.log(`🔢 Kode: ${code}`);
+            console.log(`🔢 Kode: ${code?.match(/.{1,4}/g)?.join('-') || code}`);
             console.log('═══════════════════════════════════════');
             console.log('\n📲 CARA MEMASUKKAN KODE:');
             console.log('1. Buka WhatsApp di HP Anda');
@@ -259,6 +231,7 @@ async function connectToWhatsApp() {
             console.log('5. Tunggu hingga terhubung\n');
         } catch (error) {
             console.error('❌ Gagal membuat pairing code:', error.message);
+            console.log('💡 Coba cek nomor di noBot atau noOwner');
             process.exit(1);
         }
     }
@@ -341,7 +314,7 @@ async function main() {
     console.log(`📌 Bot     : ${global.botConfig.name}`);
     console.log(`📌 Version : ${global.botConfig.version}`);
     console.log(`📌 Owner   : ${global.botConfig.owner}`);
-    console.log(`📌 Mode    : Pairing Code`);
+    console.log(`📌 Mode    : Pairing Code (Auto)`);
     console.log('═══════════════════════════════════════\n');
     
     createRequiredFolders();
