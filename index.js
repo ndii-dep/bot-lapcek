@@ -5,11 +5,13 @@ const {
     makeCacheableSignalKeyStore,
     DisconnectReason,
     delay
-} = require('baileys');
+} = require('@whiskeysockets/baileys');
+const express = require('express');
+const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
 const Pino = require('pino');
 const readline = require('readline');
-const fs = require('fs');
-const path = require('path');
 const { 
     getFeatureStatus, 
     createWelcomeCanvas, 
@@ -19,7 +21,7 @@ const {
 
 global.botConfig = {
     name: 'NeoGoforward',
-    version: '1.2.1',
+    version: '1.2.2',
     owner: 'ndiidepzX',
     noOwner: '085800650661',
     noBot: '087717274346',
@@ -27,7 +29,29 @@ global.botConfig = {
     sessionName: 'session',
     channelId: '120363416897292688@newsletter',
     groupId: '@g.us',
+    webPort: 3000,
 };
+
+let botSocket = null;
+let caseHandler = null;
+let reminderSystem = null;
+
+const FEEDBACK_FILE = './data/feedback.json';
+
+function loadFeedback() {
+    try {
+        if (fs.existsSync(FEEDBACK_FILE)) {
+            return JSON.parse(fs.readFileSync(FEEDBACK_FILE, 'utf-8'));
+        }
+    } catch (e) {}
+    return [];
+}
+
+function saveFeedback(feedbacks) {
+    const dir = path.dirname(FEEDBACK_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(FEEDBACK_FILE, JSON.stringify(feedbacks, null, 2));
+}
 
 function askQuestion(query) {
     const rl = readline.createInterface({
@@ -45,6 +69,7 @@ function createRequiredFolders() {
         'db', 'db/info', 'db/info/reminder',
         'lib', 'data', 'temp', 'temp/sticker',
         'alight-output', 'assets', 'assets/fonts',
+        'public',
     ];
     
     folders.forEach(folder => {
@@ -54,9 +79,6 @@ function createRequiredFolders() {
         }
     });
 }
-
-let caseHandler = null;
-let reminderSystem = null;
 
 function loadModules() {
     try {
@@ -73,6 +95,183 @@ function loadModules() {
     } catch (err) {
         console.error('❌ Failed to load reminder system:', err.message);
     }
+}
+
+function startWebServer() {
+    const app = express();
+    const PORT = global.botConfig.webPort || 3000;
+
+    app.use(cors());
+    app.use(express.json());
+    app.use(express.static(path.join(__dirname, 'public')));
+
+    app.get('/', (req, res) => {
+        res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    });
+
+    app.get('/api/status', (req, res) => {
+        res.json({
+            connected: !!botSocket,
+            uptime: process.uptime(),
+            memory: process.memoryUsage().heapUsed / 1024 / 1024,
+            botName: global.botConfig.name,
+            version: global.botConfig.version,
+            owner: global.botConfig.owner,
+            prefix: global.botConfig.prefix,
+            autoFeatures: {
+                welcome: getFeatureStatus('welcome'),
+                goodbye: getFeatureStatus('goodbye'),
+                typing: getFeatureStatus('autotyping'),
+                record: getFeatureStatus('autorecord'),
+                read: getFeatureStatus('autoread'),
+                postsw: getFeatureStatus('autopostsw'),
+                reactsw: getFeatureStatus('autoreactsw'),
+            }
+        });
+    });
+
+    app.get('/api/pr', (req, res) => {
+        try {
+            const { getPRs } = require('./lib/prTracker');
+            res.json(getPRs());
+        } catch (e) {
+            res.json([]);
+        }
+    });
+
+    app.post('/api/pr/add', (req, res) => {
+        try {
+            const { addPR, formatPRDetail } = require('./lib/prTracker');
+            const { subject, description, deadline } = req.body;
+            const pr = addPR({ subject, description, deadline, addedBy: 'Web Dashboard' });
+            
+            const { getAllTargets } = require('./lib/channelManager');
+            const targets = getAllTargets();
+            const prDetail = formatPRDetail(pr);
+            
+            for (const ch of targets.channels) {
+                try { botSocket.sendMessage(ch.id, { text: `📢 PR BARU!\n\n${prDetail}` }); } catch (e) {}
+            }
+            for (const gr of targets.groups) {
+                try { botSocket.sendMessage(gr.id, { text: `📢 PR BARU!\n\n${prDetail}` }); } catch (e) {}
+            }
+            
+            res.json({ success: true, pr });
+        } catch (e) {
+            res.status(500).json({ success: false, error: e.message });
+        }
+    });
+
+    app.delete('/api/pr/:id', (req, res) => {
+        try {
+            const { deletePR } = require('./lib/prTracker');
+            deletePR(req.params.id);
+            res.json({ success: true });
+        } catch (e) {
+            res.status(500).json({ success: false, error: e.message });
+        }
+    });
+
+    app.get('/api/schedule', (req, res) => {
+        try {
+            const schoolData = require('./lib/schoolData');
+            res.json(schoolData.getFullSchedule());
+        } catch (e) {
+            res.json({});
+        }
+    });
+
+    app.get('/api/piket', (req, res) => {
+        try {
+            const schoolData = require('./lib/schoolData');
+            res.json(schoolData.getFullPiket());
+        } catch (e) {
+            res.json({});
+        }
+    });
+
+    app.post('/api/send-message', async (req, res) => {
+        const { number, message } = req.body;
+        if (!botSocket) return res.status(500).json({ success: false, error: 'Bot tidak terhubung' });
+        if (!number || !message) return res.status(400).json({ success: false, error: 'Nomor dan pesan wajib diisi' });
+        
+        try {
+            let jid = number.replace(/[^0-9]/g, '');
+            if (jid.startsWith('0')) jid = '62' + jid.slice(1);
+            if (!jid.startsWith('62')) jid = '62' + jid;
+            jid += '@s.whatsapp.net';
+            
+            await botSocket.sendMessage(jid, { text: message });
+            res.json({ success: true });
+        } catch (e) {
+            res.status(500).json({ success: false, error: e.message });
+        }
+    });
+
+    app.get('/api/feedback', (req, res) => {
+        res.json(loadFeedback());
+    });
+
+    app.post('/api/feedback', async (req, res) => {
+        try {
+            const { name, category, message } = req.body;
+            if (!message) return res.status(400).json({ success: false, error: 'Pesan wajib diisi' });
+            
+            const feedbacks = loadFeedback();
+            const feedback = {
+                id: 'FB' + Date.now(),
+                name: name || 'Anonim',
+                category: category || 'Lainnya',
+                message,
+                createdAt: new Date().toISOString()
+            };
+            
+            feedbacks.unshift(feedback);
+            if (feedbacks.length > 100) feedbacks.pop();
+            saveFeedback(feedbacks);
+            
+            if (botSocket) {
+                try {
+                    const { getOwner } = require('./lib/dbManager');
+                    const owner = getOwner();
+                    if (owner.number) {
+                        const ownerJid = owner.number + '@s.whatsapp.net';
+                        await botSocket.sendMessage(ownerJid, {
+                            text: `💬 *FEEDBACK BARU!*\n━━━━━━━━━━━━━━\n\n👤 ${feedback.name}\n📂 ${feedback.category}\n💬 ${feedback.message}\n🕐 ${new Date().toLocaleString('id-ID')}\n🆔 ${feedback.id}\n\n_Dari Web Dashboard_`
+                        });
+                    }
+                } catch (e) {}
+            }
+            
+            res.json({ success: true, feedback });
+        } catch (e) {
+            res.status(500).json({ success: false, error: e.message });
+        }
+    });
+
+    app.get('/api/partners', (req, res) => {
+        try {
+            const { getPartners } = require('./lib/permission');
+            res.json(getPartners());
+        } catch (e) {
+            res.json([]);
+        }
+    });
+
+    app.get('/api/channels', (req, res) => {
+        try {
+            const { getChannels, getGroups } = require('./lib/channelManager');
+            res.json({ channels: getChannels(), groups: getGroups() });
+        } catch (e) {
+            res.json({ channels: [], groups: [] });
+        }
+    });
+
+    app.listen(PORT, () => {
+        console.log('═══════════════════════════════════════');
+        console.log(`🌐 Dashboard: http://localhost:${PORT}`);
+        console.log('═══════════════════════════════════════');
+    });
 }
 
 async function connectToWhatsApp() {
@@ -103,31 +302,20 @@ async function connectToWhatsApp() {
             console.log('═══════════════════════════════════════');
             console.log('✅ BOT CONNECTED SUCCESSFULLY!');
             console.log('═══════════════════════════════════════');
-            console.log(`🤖 Bot Name : ${global.botConfig.name}`);
-            console.log(`📌 Version  : ${global.botConfig.version}`);
-            console.log(`👤 Owner    : ${global.botConfig.owner}`);
-            console.log(`📞 No Owner : ${global.botConfig.noOwner}`);
-            console.log(`📱 No Bot   : ${global.botConfig.noBot}`);
-            console.log(`💬 Prefix   : ${global.botConfig.prefix}`);
+            console.log(`🤖 ${global.botConfig.name} v${global.botConfig.version}`);
+            console.log(`👤 ${global.botConfig.owner}`);
+            console.log(`📱 ${global.botConfig.noBot}`);
+            console.log(`💬 Prefix: ${global.botConfig.prefix}`);
             console.log('═══════════════════════════════════════');
             
+            botSocket = sock;
+            
             if (reminderSystem) {
-                try {
-                    reminderSystem.init(sock);
-                    console.log('✅ Reminder system started');
-                } catch (e) {
-                    console.log('⚠️  Reminder system init failed');
-                }
+                try { reminderSystem.init(sock); console.log('✅ Reminder started'); } catch (e) {}
             }
             
             if (getFeatureStatus('autopostsw')) {
-                try {
-                    const caption = getAutoPostSWCaption();
-                    await sock.sendMessage('status@broadcast', { text: caption });
-                    console.log('✅ Auto Post SW sent');
-                } catch (e) {
-                    console.log('⚠️  Auto Post SW failed');
-                }
+                try { await sock.sendMessage('status@broadcast', { text: getAutoPostSWCaption() }); } catch (e) {}
             }
             
         } else if (connection === 'close') {
@@ -135,20 +323,17 @@ async function connectToWhatsApp() {
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             
             console.log('❌ Koneksi terputus');
+            if (lastDisconnect?.error) console.log('Error:', lastDisconnect.error.message);
             
-            if (lastDisconnect?.error) {
-                console.log('Error:', lastDisconnect.error.message);
-            }
+            botSocket = null;
             
             if (shouldReconnect) {
                 console.log('🔄 Mencoba reconnect dalam 5 detik...');
                 await delay(5000);
                 connectToWhatsApp();
             } else {
-                console.log('🔒 Logged out. Hapus folder session dan jalankan ulang bot.');
-                if (reminderSystem) {
-                    try { reminderSystem.stop(); } catch (e) {}
-                }
+                console.log('🔒 Logged out.');
+                if (reminderSystem) { try { reminderSystem.stop(); } catch (e) {} }
             }
         }
     });
@@ -163,30 +348,13 @@ async function connectToWhatsApp() {
                 try {
                     const userName = participant.split('@')[0];
                     const displayName = userName.startsWith('62') ? '0' + userName.slice(2) : userName;
-                    
                     let groupName = 'Grup';
-                    try {
-                        const meta = await sock.groupMetadata(id);
-                        groupName = meta.subject;
-                    } catch (e) {}
-                    
+                    try { groupName = (await sock.groupMetadata(id)).subject; } catch (e) {}
                     let profilePic = null;
-                    try {
-                        const pp = await sock.profilePictureUrl(participant, 'image');
-                        profilePic = pp;
-                    } catch (e) {}
-                    
-                    const canvasBuffer = await createWelcomeCanvas(displayName, groupName, profilePic);
-                    
-                    await sock.sendMessage(id, {
-                        image: canvasBuffer,
-                        caption: `🎉 *WELCOME!*\n\nHai @${userName}!\nSelamat datang di *${groupName}*!\n\nJangan lupa baca rules grup ya!`,
-                        mentions: [participant]
-                    });
-                    
-                } catch (e) {
-                    console.error('Welcome error:', e.message);
-                }
+                    try { profilePic = await sock.profilePictureUrl(participant, 'image'); } catch (e) {}
+                    const canvas = await createWelcomeCanvas(displayName, groupName, profilePic);
+                    await sock.sendMessage(id, { image: canvas, caption: `🎉 *WELCOME!*\n\nHai @${userName}!\nSelamat datang di *${groupName}*!\n\nJangan lupa baca rules grup ya!`, mentions: [participant] });
+                } catch (e) {}
             }
         }
         
@@ -195,24 +363,11 @@ async function connectToWhatsApp() {
                 try {
                     const userName = participant.split('@')[0];
                     const displayName = userName.startsWith('62') ? '0' + userName.slice(2) : userName;
-                    
                     let groupName = 'Grup';
-                    try {
-                        const meta = await sock.groupMetadata(id);
-                        groupName = meta.subject;
-                    } catch (e) {}
-                    
-                    const canvasBuffer = await createGoodbyeCanvas(displayName, groupName);
-                    
-                    await sock.sendMessage(id, {
-                        image: canvasBuffer,
-                        caption: `👋 *GOODBYE!*\n\n@${userName} telah meninggalkan *${groupName}*.\n\nSemoga sukses selalu! ✨`,
-                        mentions: [participant]
-                    });
-                    
-                } catch (e) {
-                    console.error('Goodbye error:', e.message);
-                }
+                    try { groupName = (await sock.groupMetadata(id)).subject; } catch (e) {}
+                    const canvas = await createGoodbyeCanvas(displayName, groupName);
+                    await sock.sendMessage(id, { image: canvas, caption: `👋 *GOODBYE!*\n\n@${userName} telah meninggalkan *${groupName}*.\n\nSemoga sukses selalu! ✨`, mentions: [participant] });
+                } catch (e) {}
             }
         }
     });
@@ -220,37 +375,24 @@ async function connectToWhatsApp() {
     if (!sock.authState.creds.registered) {
         console.log('\n📱 BOT BELUM TERDAFTAR');
         console.log('═══════════════════════════════════════');
-        console.log('Silakan lakukan pairing code');
-        console.log('Masukkan nomor dengan awalan 0');
-        console.log('Contoh: 08771987646');
-        console.log('═══════════════════════════════════════\n');
-        
         const phoneNumber = await askQuestion('📞 Masukkan nomor WhatsApp: ');
-        console.log(`🔄 Memproses nomor: ${phoneNumber}`);
+        console.log(`🔄 Memproses: ${phoneNumber}`);
         
         try {
             const code = await sock.requestPairingCode(phoneNumber);
-            console.log('\n═══════════════════════════════════════');
-            console.log('✅ PAIRING CODE BERHASIL DIBUAT');
             console.log('═══════════════════════════════════════');
+            console.log('✅ PAIRING CODE BERHASIL DIBUAT');
             console.log(`🔢 Kode: ${code?.match(/.{1,4}/g)?.join('-') || code}`);
             console.log('═══════════════════════════════════════');
-            console.log('\n📲 CARA MEMASUKKAN KODE:');
-            console.log('1. Buka WhatsApp di HP Anda');
-            console.log('2. Masuk ke Settings > Linked Devices');
-            console.log('3. Pilih "Link with Phone Number"');
-            console.log('4. Masukkan kode di atas');
-            console.log('5. Tunggu hingga terhubung\n');
+            console.log('\n📲 Masukkan kode di HP > Settings > Linked Devices > Link with Phone Number\n');
         } catch (error) {
-            console.error('❌ Gagal membuat pairing code:', error.message);
-            console.log('💡 Tips: Pastikan nomor sudah benar dan coba lagi');
+            console.error('❌ Gagal:', error.message);
             process.exit(1);
         }
     }
     
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
-        
         if (msg.key.fromMe) return;
         if (m.type !== 'notify') return;
         
@@ -267,30 +409,15 @@ async function connectToWhatsApp() {
                 participant: msg.key.participant,
             };
             
-            const chatType = messageInfo.isChannel ? 'Channel' : 
-                           messageInfo.isGroup ? 'Group' : 'Private';
+            const chatType = messageInfo.isChannel ? 'Channel' : messageInfo.isGroup ? 'Group' : 'Private';
+            console.log(`📩 [${chatType}] ${messageInfo.pushName}: ${getTextPreview(msg.message)}`);
             
-            const preview = getTextPreview(msg.message);
-            console.log(`📩 [${chatType}] ${messageInfo.pushName}: ${preview}`);
-            
-            if (getFeatureStatus('autotyping')) {
-                await sock.sendPresenceUpdate('composing', messageInfo.from);
-            }
-            
-            if (getFeatureStatus('autorecord')) {
-                await sock.sendPresenceUpdate('recording', messageInfo.from);
-            }
-            
-            if (getFeatureStatus('autoread')) {
-                await sock.readMessages([msg.key]);
-            }
-            
-            if (caseHandler) {
-                await caseHandler(sock, messageInfo);
-            }
-            
+            if (getFeatureStatus('autotyping')) await sock.sendPresenceUpdate('composing', messageInfo.from);
+            if (getFeatureStatus('autorecord')) await sock.sendPresenceUpdate('recording', messageInfo.from);
+            if (getFeatureStatus('autoread')) await sock.readMessages([msg.key]);
+            if (caseHandler) await caseHandler(sock, messageInfo);
         } catch (err) {
-            console.error('❌ Error processing message:', err.message);
+            console.error('❌ Error:', err.message);
         }
     });
     
@@ -299,38 +426,29 @@ async function connectToWhatsApp() {
 
 function getTextPreview(message) {
     if (!message) return '[Non-text]';
-    if (message.conversation) {
-        return message.conversation.length > 50 ? 
-               message.conversation.substring(0, 50) + '...' : 
-               message.conversation;
-    }
-    if (message.extendedTextMessage?.text) {
-        const txt = message.extendedTextMessage.text;
-        return txt.length > 50 ? txt.substring(0, 50) + '...' : txt;
-    }
+    if (message.conversation) return message.conversation.length > 50 ? message.conversation.substring(0, 50) + '...' : message.conversation;
+    if (message.extendedTextMessage?.text) return message.extendedTextMessage.text.length > 50 ? message.extendedTextMessage.text.substring(0, 50) + '...' : message.extendedTextMessage.text;
     if (message.imageMessage) return '[Image]';
     if (message.videoMessage) return '[Video]';
     if (message.stickerMessage) return '[Sticker]';
     if (message.audioMessage) return '[Audio]';
     if (message.documentMessage) return '[Document]';
-    if (message.contactMessage) return '[Contact]';
-    if (message.locationMessage) return '[Location]';
     return '[Other]';
 }
 
 async function main() {
     console.clear();
     console.log('═══════════════════════════════════════');
-    console.log('🤖 WHATSAPP BOT - SCHOOL REMINDER');
+    console.log('🤖 WHATSAPP BOT + WEB DASHBOARD');
     console.log('═══════════════════════════════════════');
     console.log(`📌 Bot     : ${global.botConfig.name}`);
     console.log(`📌 Version : ${global.botConfig.version}`);
     console.log(`📌 Owner   : ${global.botConfig.owner}`);
-    console.log(`📌 Mode    : Pairing Code (Manual)`);
     console.log('═══════════════════════════════════════\n');
     
     createRequiredFolders();
     loadModules();
+    startWebServer();
     
     try {
         await connectToWhatsApp();
@@ -340,19 +458,11 @@ async function main() {
     }
 }
 
-process.on('uncaughtException', (err) => {
-    console.error('❌ Uncaught Exception:', err.message);
-});
-
-process.on('unhandledRejection', (reason) => {
-    console.error('❌ Unhandled Rejection:', reason?.message || reason);
-});
-
+process.on('uncaughtException', (err) => console.error('❌', err.message));
+process.on('unhandledRejection', (reason) => console.error('❌', reason?.message || reason));
 process.on('SIGINT', () => {
-    console.log('\n👋 Bot shutting down...');
-    if (reminderSystem) {
-        try { reminderSystem.stop(); } catch (e) {}
-    }
+    console.log('\n👋 Shutting down...');
+    if (reminderSystem) { try { reminderSystem.stop(); } catch (e) {} }
     process.exit(0);
 });
 
