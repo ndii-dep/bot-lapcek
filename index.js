@@ -5,8 +5,9 @@ const {
     makeCacheableSignalKeyStore,
     DisconnectReason,
     delay
-} = require('@whiskeysockets/baileys');
+} = require('baileys');
 const Pino = require('pino');
+const readline = require('readline');
 const fs = require('fs');
 const path = require('path');
 const { 
@@ -27,6 +28,17 @@ global.botConfig = {
     channelId: '120363416897292688@newsletter',
     groupId: '@g.us',
 };
+
+function askQuestion(query) {
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+    });
+    return new Promise(resolve => rl.question(query, ans => {
+        rl.close();
+        resolve(ans);
+    }));
+}
 
 function createRequiredFolders() {
     const folders = [
@@ -168,7 +180,7 @@ async function connectToWhatsApp() {
                     
                     await sock.sendMessage(id, {
                         image: canvasBuffer,
-                        caption: `🎉 *WELCOME!*\n\nHai @${participant.split('@')[0]}!\nSelamat datang di *${groupName}*!\n\nJangan lupa baca rules grup ya!`,
+                        caption: `🎉 *WELCOME!*\n\nHai @${userName}!\nSelamat datang di *${groupName}*!\n\nJangan lupa baca rules grup ya!`,
                         mentions: [participant]
                     });
                     
@@ -206,19 +218,19 @@ async function connectToWhatsApp() {
     });
     
     if (!sock.authState.creds.registered) {
-        const phoneNumber = global.botConfig.noBot || global.botConfig.noOwner;
-        const cleaned = phoneNumber.replace(/\D/g, '');
-        const formattedNumber = cleaned.startsWith('0') ? '62' + cleaned.slice(1) : cleaned.startsWith('62') ? cleaned : '62' + cleaned;
-        
         console.log('\n📱 BOT BELUM TERDAFTAR');
         console.log('═══════════════════════════════════════');
-        console.log(`🔄 Menggunakan nomor: ${phoneNumber}`);
-        console.log(`📞 Format: ${formattedNumber}`);
+        console.log('Silakan lakukan pairing code');
+        console.log('Masukkan nomor dengan awalan 0');
+        console.log('Contoh: 08771987646');
         console.log('═══════════════════════════════════════\n');
         
+        const phoneNumber = await askQuestion('📞 Masukkan nomor WhatsApp: ');
+        console.log(`🔄 Memproses nomor: ${phoneNumber}`);
+        
         try {
-            const code = await sock.requestPairingCode(formattedNumber);
-            console.log('═══════════════════════════════════════');
+            const code = await sock.requestPairingCode(phoneNumber);
+            console.log('\n═══════════════════════════════════════');
             console.log('✅ PAIRING CODE BERHASIL DIBUAT');
             console.log('═══════════════════════════════════════');
             console.log(`🔢 Kode: ${code?.match(/.{1,4}/g)?.join('-') || code}`);
@@ -231,7 +243,7 @@ async function connectToWhatsApp() {
             console.log('5. Tunggu hingga terhubung\n');
         } catch (error) {
             console.error('❌ Gagal membuat pairing code:', error.message);
-            console.log('💡 Coba cek nomor di noBot atau noOwner');
+            console.log('💡 Tips: Pastikan nomor sudah benar dan coba lagi');
             process.exit(1);
         }
     }
@@ -314,7 +326,7 @@ async function main() {
     console.log(`📌 Bot     : ${global.botConfig.name}`);
     console.log(`📌 Version : ${global.botConfig.version}`);
     console.log(`📌 Owner   : ${global.botConfig.owner}`);
-    console.log(`📌 Mode    : Pairing Code (Auto)`);
+    console.log(`📌 Mode    : Pairing Code (Manual)`);
     console.log('═══════════════════════════════════════\n');
     
     createRequiredFolders();
