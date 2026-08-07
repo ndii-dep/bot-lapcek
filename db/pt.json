@@ -1,0 +1,20 @@
+{
+  "methods": [
+    {
+      "name": "QRIS",
+      "number": "087717274346",
+      "type": "qris",
+      "qrisImage": "https://"
+    },
+    {
+      "name": "DANA",
+      "number": "087717274346",
+      "type": "ewallet"
+    },
+    {
+      "name": "GOPAY",
+      "number": "087717274346",
+      "type": "ewallet"
+    }
+  ]
+}
